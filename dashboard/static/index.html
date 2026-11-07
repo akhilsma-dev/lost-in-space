@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lost in Space · Mission Control</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand"><span class="logo">✦</span> LOST IN SPACE <span class="sub">MISSION CONTROL</span></div>
+  <div class="feeds">
+    <span id="modeLabel" class="chip">—</span>
+    <span class="feed" id="fTruth"><i></i>TRUTH <b>—</b></span>
+    <span class="feed" id="fEst"><i></i>ESTIMATE <b>—</b></span>
+    <span id="clock" class="clock">--:--:--</span>
+  </div>
+</header>
+
+<main id="grid">
+  <section id="viewPanel" class="panel">
+    <div class="ptitle"><span>CAMERA VIEW</span><span id="viewNote" class="dim">screen in the box · overlay from the ESTIMATED attitude</span></div>
+    <canvas id="view"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--cent)"></i>detected blob</span>
+      <span><i style="background:var(--lock)"></i>identified star</span>
+      <span><i style="background:var(--con)"></i>constellation (from estimate)</span>
+    </div>
+  </section>
+
+  <aside id="side">
+    <section class="panel" id="lockPanel">
+      <div id="lockBadge" class="badge nosig">NO SIGNAL</div>
+      <div class="lockmeta">
+        <div><label>CONFIDENCE</label><div class="bar"><div id="confBar"></div></div><span id="conf" class="num">—</span></div>
+        <div class="kv"><label>MATCHES</label><span id="matches" class="num">—</span></div>
+        <div class="kv"><label>P(FALSE)</label><span id="prob" class="num">—</span></div>
+        <div class="kv"><label>RMSE</label><span id="rmse" class="num">—</span></div>
+        <div class="kv"><label>SOLVE</label><span id="solvems" class="num">—</span></div>
+        <div class="kv"><label>BLOBS</label><span id="ncent" class="num">—</span></div>
+      </div>
+    </section>
+
+    <section class="panel" id="attPanel">
+      <div class="ptitle"><span>ATTITUDE</span><span class="dim">J2000 · tetra3 convention</span></div>
+      <table class="att">
+        <thead><tr><th></th><th>RA</th><th>DEC</th><th>ROLL</th></tr></thead>
+        <tbody>
+          <tr class="truthrow"><td>TRUTH <span class="dim">(hidden)</span></td><td id="tRa">—</td><td id="tDec">—</td><td id="tRoll">—</td></tr>
+          <tr class="estrow"><td>ESTIMATE</td><td id="eRa">—</td><td id="eDec">—</td><td id="eRoll">—</td></tr>
+          <tr class="errrow"><td>Δ</td><td id="dRa">—</td><td id="dDec">—</td><td id="dRoll">—</td></tr>
+        </tbody>
+      </table>
+      <div class="errbig">
+        <div><label>FULL-ATTITUDE ERROR</label><div id="errFull" class="big">—</div></div>
+        <div><label>POINTING</label><div id="errPoint" class="mid">—</div></div>
+        <div><label>ROLL</label><div id="errRoll" class="mid">—</div></div>
+      </div>
+    </section>
+
+    <section class="panel" id="dynPanel">
+      <div class="dyn"><label>TUMBLE</label><div class="gauge"><div id="rateBar"></div></div><span id="rate" class="num">—</span></div>
+      <div class="dyn2">
+        <div class="kv"><label>GLARE</label><span id="glare" class="pill">—</span></div>
+        <div class="kv"><label>MODE</label><span id="mode" class="pill">—</span></div>
+        <div class="kv"><label>LAST LOCK</label><span id="sinceLock" class="num">—</span></div>
+      </div>
+    </section>
+
+    <section class="panel grow" id="att3dPanel">
+      <div class="ptitle"><span>SPACECRAFT</span><span class="dim"><i class="sw ghost"></i>truth <i class="sw est"></i>estimate</span></div>
+      <canvas id="att3d"></canvas>
+    </section>
+  </aside>
+
+  <section id="chartPanel" class="panel">
+    <div class="ptitle"><span>ERROR &amp; LOCK · LAST 90 s</span>
+      <span class="dim">lock 30 s <b id="lock30">—</b> · median err <b id="med30">—</b> · session <b id="sess">—</b></span></div>
+    <canvas id="chart"></canvas>
+  </section>
+
+  <section id="ratePanel" class="panel">
+    <div class="ptitle"><span>SOLVE RATE</span><span id="srTitle" class="dim">tetra3 alone vs tetra3 + CNN</span></div>
+    <div id="srRows"></div>
+    <div id="srNote" class="dim small"></div>
+  </section>
+</main>
+<div id="fsHint">press F for full screen</div>
+<script src="/app.js"></script>
+</body>
+</html>
