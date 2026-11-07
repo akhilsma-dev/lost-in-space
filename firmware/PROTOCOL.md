@@ -57,4 +57,4 @@ and turns the LED off; servos hold their last position. The bridge re-sends
 | Port | Direction | Content |
 |---|---|---|
 | 5006 | bridge → sim | `flare`, `rate <deg/s>` (sim/live.py command port) |
-| 5007 | solver → bridge | JSON per line/datagram: `{"status": "LOCK", "ra": .., "dec": .., "roll": ..}`; optional `"pan"`, `"tilt"` override the servo mapping |
+| 5007 | solver → bridge | JSON per line/datagram: `{"status": "LOCK", "ra": .., "dec": .., "roll": ..}`; optional `"pan"`, `"tilt"` override the servo mapping (default mapping: model centres on LOCK and shows turn since then; see `bridge/README.md`) |

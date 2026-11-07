@@ -45,6 +45,20 @@ python -c "import socket,json; socket.socket(2,2).sendto(json.dumps({'status':'L
    `usbmodem*`, or pass `--port`). It waits 2 s after opening because that
    resets the board.
 
+## Servo behaviour (spacecraft model)
+
+Default `--servo-mode relative`: when the solver reaches LOCK the model goes to
+centre (90°, 90°) and remembers that pointing. After that it shows how far the
+spacecraft has turned since the lock: pan = left/right, tilt = up/down (roll
+isn't shown). This works well up to about ±90° of turn, then the servos sit at
+their limits. Pressing flare, or any new LOCK after SEARCH/LOST, re-centres it.
+While SEARCH/LOST the model holds still. If a direction looks backwards on the
+real rig, add `--flip-pan` / `--flip-tilt`. `--servo-mode absolute` is the old
+mapping (pan = RA/2, tilt = 90 + Dec), which swings end to end when RA crosses 0°.
+
+Note: in fake mode the knob starts at 0, so the bridge immediately sets the sim
+to `rate 0`; type a knob value (e.g. `400`) to make it tumble.
+
 Tunables: in the sketch, the constants at the top (`SERVO_MAX_DPS`, tilt limits,
 `BTN_ACTIVE_HIGH` if the button reads inverted); in the bridge, `--max-rate`,
 `--rate-step`, `--no-servo`.

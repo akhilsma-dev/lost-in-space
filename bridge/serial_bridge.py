@@ -6,8 +6,16 @@
 
 Solver JSON (one object per datagram or per line):
   {"status": "LOCK"|"SEARCH"|"LOST", "ra": deg, "dec": deg, "roll": deg}
-optional "pan"/"tilt" (deg) override the default servo mapping
-  pan = ra / 2   (0..360 -> 0..180)      tilt = 90 + dec   (clamped on the board)
+optional "pan"/"tilt" (deg) override the servo mapping.
+
+Servo mapping (--servo-mode):
+  relative (default)  on entering LOCK the model centres (90, 90) and remembers that pointing;
+                      afterwards pan/tilt show how far the boresight has turned since then
+                      (pan = left/right along RA, tilt = up/down along Dec, roll ignored).
+                      Good to about +-90 deg, then the servos sit at their limits. A flare or
+                      a new LOCK re-centres. While SEARCH/LOST the model holds still.
+  absolute            pan = ra / 2 (0..360 -> 0..180), tilt = 90 + dec. Swings end to end
+                      whenever RA wraps through 0.
 
 Protocol details: firmware/PROTOCOL.md
 
@@ -24,6 +32,7 @@ Fake-mode keys (type then Enter):
 import argparse
 import glob
 import json
+import math
 import queue
 import socket
 import sys
@@ -35,10 +44,27 @@ RESET_WAIT_S = 2.0
 SEND_HZ = 10.0
 KEEPALIVE_S = 1.0
 SOLVER_STALE_S = 3.0
+FLARE_SETTLE_S = 0.3   # ignore solver data this long after a flare before re-centring
 
 
 def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
+
+
+def relative_pan_tilt(ra0, dec0, ra, dec):
+    """Angles (deg) of pointing (ra, dec) seen from a frame looking at (ra0, dec0):
+    pan = turn towards +RA (east), tilt = turn towards +Dec (north). No wrap-around at RA 0."""
+    def vec(r, d):
+        r, d = math.radians(r), math.radians(d)
+        return (math.cos(d) * math.cos(r), math.cos(d) * math.sin(r), math.sin(d))
+    b, fwd = vec(ra, dec), vec(ra0, dec0)
+    r0, d0 = math.radians(ra0), math.radians(dec0)
+    east = (-math.sin(r0), math.cos(r0), 0.0)
+    north = (-math.sin(d0) * math.cos(r0), -math.sin(d0) * math.sin(r0), math.cos(d0))
+    dot = lambda u, v: u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+    pan = math.degrees(math.atan2(dot(b, east), dot(b, fwd)))
+    tilt = math.degrees(math.asin(max(-1.0, min(1.0, dot(b, north)))))
+    return pan, tilt
 
 
 # ------------------------------------------------------------------ boards
@@ -186,6 +212,9 @@ class Bridge:
         self.solver_new = False
         self.sent_status = None
         self.sent_status_t = 0.0
+        self.servo_ref = None       # (ra, dec) the model was centred on
+        self.ref_status = None      # last solver status seen by servo_target
+        self.flare_t = -1e9
 
     # --- board -> sim
     def to_sim(self, msg):
@@ -202,6 +231,9 @@ class Bridge:
         if line == "BTN FLARE":
             log("[board >] BTN FLARE")
             self.to_sim("flare")
+            self.servo_ref = None       # re-centre the model on the next LOCK
+            self.ref_status = None
+            self.flare_t = time.monotonic()
         elif line.startswith("KNOB "):
             try:
                 n = int(line.split()[1])
@@ -251,11 +283,30 @@ class Bridge:
         self.board.write(f"ATT {ra:.2f} {dec:.2f} {roll:.1f}")
         if self.args.no_servo:
             return
+        servo = self.servo_target(st, ra, dec, d)
+        if servo:
+            self.board.write(f"SERVO {servo[0]:.1f} {servo[1]:.1f}")
+
+    def servo_target(self, st, ra, dec, d):
         if "pan" in d and "tilt" in d:
-            pan, tilt = float(d["pan"]), float(d["tilt"])
-        else:
-            pan, tilt = (ra % 360.0) / 2.0, 90.0 + dec
-        self.board.write(f"SERVO {pan:.1f} {tilt:.1f}")
+            return float(d["pan"]), float(d["tilt"])
+        if self.args.servo_mode == "absolute":
+            return (ra % 360.0) / 2.0, 90.0 + dec
+        # relative: reference = pointing when we (re-)entered LOCK
+        if time.monotonic() - self.flare_t < FLARE_SETTLE_S:
+            return None             # solver data may still be from before the flare
+        entering_lock = st == "LOCK" and self.ref_status != "LOCK"
+        if st:
+            self.ref_status = st
+        if entering_lock or (st == "LOCK" and self.servo_ref is None):
+            self.servo_ref = (ra, dec)
+            log(f"[servo] new reference RA {ra:.2f} Dec {dec:.2f} -> centre")
+        if st != "LOCK" or self.servo_ref is None:
+            return None             # SEARCH / LOST: hold the model where it is
+        pan, tilt = relative_pan_tilt(*self.servo_ref, ra, dec)
+        sp = -1.0 if self.args.flip_pan else 1.0
+        stl = -1.0 if self.args.flip_tilt else 1.0
+        return 90.0 + sp * pan, 90.0 + stl * tilt
 
     def run(self):
         period = 1.0 / SEND_HZ
@@ -307,6 +358,10 @@ def main():
     ap.add_argument("--max-rate", type=float, default=20.0, help="tumble rate at full knob, deg/s")
     ap.add_argument("--rate-step", type=float, default=0.5, help="min rate change worth sending, deg/s")
     ap.add_argument("--no-servo", action="store_true", help="don't send SERVO lines")
+    ap.add_argument("--servo-mode", choices=["relative", "absolute"], default="relative",
+                    help="how attitude maps to the model (see top of file)")
+    ap.add_argument("--flip-pan", action="store_true", help="reverse pan direction (relative mode)")
+    ap.add_argument("--flip-tilt", action="store_true", help="reverse tilt direction (relative mode)")
     ap.add_argument("--truth-demo", action="store_true",
                     help="testing only: listen to sim truth on UDP 5005 and treat it as a LOCKed solver "
                          "(conflicts with anything else bound to 5005, e.g. the dashboard)")
