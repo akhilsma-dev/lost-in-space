@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 740" font-family="-apple-system, Helvetica, Arial, sans-serif">
+  <rect width="1000" height="740" fill="#fafaf7"/>
+  <text x="500" y="38" text-anchor="middle" font-size="22" font-weight="700" fill="#222">Lost in Space — Wiring (no soldering)</text>
+
+  <!-- ===== Laptop ===== -->
+  <rect x="30" y="230" width="150" height="95" rx="6" fill="#e8eef5" stroke="#333" stroke-width="2"/>
+  <rect x="15" y="325" width="180" height="12" rx="3" fill="#bbb" stroke="#333" stroke-width="2"/>
+  <text x="105" y="283" text-anchor="middle" font-size="16" font-weight="700" fill="#333">LAPTOP</text>
+  <text x="105" y="360" text-anchor="middle" font-size="12" fill="#555">runs the AI + sends commands</text>
+
+  <!-- USB cable -->
+  <path d="M195,331 C 300,331 300,520 420,520 L420,462" fill="none" stroke="#888" stroke-width="6" stroke-linecap="round"/>
+  <text x="250" y="545" font-size="12" fill="#444">micro USB cable</text>
+  <text x="250" y="560" font-size="12" fill="#444">= power IN + data</text>
+
+  <!-- ===== Grove Beginner Kit ===== -->
+  <rect x="230" y="110" width="330" height="370" rx="10" fill="#1f4e8c"/>
+  <text x="548" y="134" text-anchor="end" font-size="14" font-weight="700" fill="#fff">GROVE BEGINNER KIT</text>
+  <!-- left modules -->
+  <g font-size="11" fill="#fff" text-anchor="middle">
+    <rect x="245" y="150" width="70" height="50" rx="4" fill="#2c6bb5"/><text x="280" y="172">OLED</text><text x="280" y="186">status</text>
+    <rect x="245" y="210" width="70" height="40" rx="4" fill="#2c6bb5"/><text x="280" y="228">Button D6</text><text x="280" y="242">FLARE</text>
+    <rect x="245" y="260" width="70" height="40" rx="4" fill="#2c6bb5"/><text x="280" y="278">Knob A0</text><text x="280" y="292">TUMBLE</text>
+    <rect x="245" y="310" width="70" height="40" rx="4" fill="#2c6bb5"/><text x="280" y="334">Buzzer D5</text>
+    <rect x="245" y="360" width="70" height="40" rx="4" fill="#2c6bb5"/><text x="280" y="384">LED D4</text>
+    <rect x="475" y="150" width="70" height="40" rx="4" fill="#2c6bb5"/><text x="510" y="174">Light/Sound</text>
+    <rect x="475" y="200" width="70" height="40" rx="4" fill="#2c6bb5"/><text x="510" y="224">Temp</text>
+    <rect x="475" y="300" width="70" height="40" rx="4" fill="#2c6bb5"/><text x="510" y="318">Accel</text><text x="510" y="332">(optional)</text>
+  </g>
+  <text x="280" y="425" text-anchor="middle" font-size="10" fill="#cfe0ff">already wired</text>
+  <text x="280" y="438" text-anchor="middle" font-size="10" fill="#cfe0ff">inside the PCB —</text>
+  <text x="280" y="451" text-anchor="middle" font-size="10" fill="#cfe0ff">no wires needed</text>
+
+  <!-- center board -->
+  <rect x="330" y="150" width="130" height="310" rx="6" fill="#2a5fa3" stroke="#9cc4ee" stroke-width="2"/>
+  <text x="395" y="420" text-anchor="middle" font-size="11" fill="#fff">center board</text>
+  <text x="395" y="434" text-anchor="middle" font-size="11" fill="#fff">= the Arduino</text>
+  <rect x="336" y="190" width="12" height="200" fill="#f2c230"/>
+  <rect x="442" y="170" width="12" height="230" fill="#f2c230"/>
+  <rect x="405" y="448" width="30" height="12" rx="2" fill="#ddd" stroke="#333"/>
+  <!-- pin dots + labels -->
+  <circle cx="342" cy="300" r="4" fill="#111"/><text x="354" y="304" font-size="12" font-weight="700" fill="#fff">5V</text>
+  <circle cx="342" cy="320" r="4" fill="#111"/><text x="354" y="324" font-size="12" font-weight="700" fill="#fff">GND</text>
+  <circle cx="448" cy="250" r="4" fill="#111"/><text x="436" y="254" text-anchor="end" font-size="12" font-weight="700" fill="#fff">D9</text>
+  <circle cx="448" cy="270" r="4" fill="#111"/><text x="436" y="274" text-anchor="end" font-size="12" font-weight="700" fill="#fff">D10</text>
+    
+  <!-- ===== Breadboard ===== -->
+  <rect x="620" y="125" width="350" height="230" rx="6" fill="#f1f0ea" stroke="#aaa" stroke-width="2"/>
+  <text x="795" y="345" text-anchor="middle" font-size="13" font-weight="700" fill="#666">BREADBOARD</text>
+  <line x1="635" y1="152" x2="955" y2="152" stroke="#d62828" stroke-width="4"/>
+  <line x1="635" y1="177" x2="955" y2="177" stroke="#1d4ed8" stroke-width="4"/>
+  <text x="640" y="146" font-size="12" font-weight="700" fill="#d62828">+ 5V</text>
+  <text x="640" y="196" font-size="12" font-weight="700" fill="#1d4ed8">− GND</text>
+  <g stroke="#ddd" stroke-width="1">
+    <line x1="640" y1="215" x2="950" y2="215"/><line x1="640" y1="235" x2="950" y2="235"/>
+    <line x1="640" y1="255" x2="950" y2="255"/><line x1="640" y1="275" x2="950" y2="275"/>
+    <line x1="640" y1="295" x2="950" y2="295"/><line x1="640" y1="315" x2="950" y2="315"/>
+  </g>
+
+  <!-- capacitor -->
+  <line x1="783" y1="152" x2="783" y2="220" stroke="#777" stroke-width="2"/>
+  <line x1="797" y1="177" x2="797" y2="220" stroke="#777" stroke-width="2"/>
+  <rect x="772" y="220" width="36" height="44" rx="5" fill="#222"/>
+  <rect x="796" y="220" width="10" height="44" fill="#ccc"/>
+  <text x="790" y="282" text-anchor="middle" font-size="11" fill="#333">capacitor</text>
+  <text x="790" y="296" text-anchor="middle" font-size="10" fill="#333">long leg → +   stripe → −</text>
+
+  <!-- ===== Board power wires ===== -->
+  <circle cx="342" cy="300" r="5" fill="#d62828"/>
+  <path d="M342,300 H320 V70 H950 V152" fill="none" stroke="#d62828" stroke-width="4" stroke-linejoin="round"/>
+  <circle cx="950" cy="152" r="5" fill="#d62828"/>
+  <path d="M342,320 H328 V85 H935 V177" fill="none" stroke="#111" stroke-width="4" stroke-linejoin="round"/>
+  <circle cx="935" cy="177" r="5" fill="#111"/>
+
+  <!-- ===== Signal wires ===== -->
+  <path d="M448,250 H600 V100 H860 V460" fill="none" stroke="#f08c00" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M448,270 H615 V112 H700 V460" fill="none" stroke="#f08c00" stroke-width="4" stroke-linejoin="round"/>
+    
+  <!-- ===== Servo 2 (left, D10) ===== -->
+  <line x1="712" y1="460" x2="712" y2="152" stroke="#d62828" stroke-width="3"/>
+  <line x1="724" y1="460" x2="724" y2="177" stroke="#6b3b1f" stroke-width="3"/>
+  <circle cx="712" cy="152" r="4" fill="#d62828"/><circle cx="724" cy="177" r="4" fill="#6b3b1f"/>
+  <rect x="692" y="460" width="40" height="14" rx="2" fill="#111"/>
+  <g stroke-width="3"><line x1="700" y1="474" x2="700" y2="520" stroke="#f08c00"/><line x1="712" y1="474" x2="712" y2="520" stroke="#d62828"/><line x1="724" y1="474" x2="724" y2="520" stroke="#6b3b1f"/></g>
+  <rect x="650" y="520" width="120" height="70" rx="6" fill="#2b2b2b"/>
+  <circle cx="685" cy="555" r="22" fill="#ddd" stroke="#999"/>
+  <text x="710" y="612" text-anchor="middle" font-size="13" font-weight="700" fill="#222">Servo 2 (tilt) → D10</text>
+
+  <!-- ===== Servo 1 (right, D9) ===== -->
+  <line x1="872" y1="460" x2="872" y2="152" stroke="#d62828" stroke-width="3"/>
+  <line x1="884" y1="460" x2="884" y2="177" stroke="#6b3b1f" stroke-width="3"/>
+  <circle cx="872" cy="152" r="4" fill="#d62828"/><circle cx="884" cy="177" r="4" fill="#6b3b1f"/>
+  <rect x="852" y="460" width="40" height="14" rx="2" fill="#111"/>
+  <g stroke-width="3"><line x1="860" y1="474" x2="860" y2="520" stroke="#f08c00"/><line x1="872" y1="474" x2="872" y2="520" stroke="#d62828"/><line x1="884" y1="474" x2="884" y2="520" stroke="#6b3b1f"/></g>
+  <rect x="810" y="520" width="120" height="70" rx="6" fill="#2b2b2b"/>
+  <circle cx="845" cy="555" r="22" fill="#ddd" stroke="#999"/>
+  <text x="870" y="612" text-anchor="middle" font-size="13" font-weight="700" fill="#222">Servo 1 (pan) → D9</text>
+
+  <text x="685" y="452" text-anchor="end" font-size="10" fill="#555">servo plug: a jumper</text>
+  <text x="685" y="465" text-anchor="end" font-size="10" fill="#555">in each hole →</text>
+
+  <!-- ===== Power flow badges ===== -->
+  <g font-size="12" fill="#222">
+    <circle cx="215" cy="400" r="13" fill="#2f9e44"/><text x="215" y="405" text-anchor="middle" fill="#fff" font-weight="700">1</text>
+    <circle cx="395" cy="475" r="13" fill="#2f9e44"/><text x="395" y="480" text-anchor="middle" fill="#fff" font-weight="700">2</text>
+    <circle cx="560" cy="60" r="13" fill="#2f9e44"/><text x="560" y="65" text-anchor="middle" fill="#fff" font-weight="700">3</text>
+    <circle cx="790" cy="440" r="13" fill="#2f9e44"/><text x="790" y="445" text-anchor="middle" fill="#fff" font-weight="700">4</text>
+  </g>
+
+  <!-- ===== Legend ===== -->
+  <rect x="20" y="635" width="960" height="95" rx="8" fill="#fff" stroke="#ddd"/>
+  <g font-size="12" fill="#222">
+    <text x="35" y="657" font-weight="700">How power flows:</text>
+    <text x="35" y="677">① Laptop USB gives the board 5V.  ② The board powers its built-in modules through the circuit board.</text>
+    <text x="35" y="697">③ The board's 5V &amp; GND pins feed the breadboard rails.  ④ Servos drink power from the rails; the orange wire only carries instructions.</text>
+    <line x1="35" y1="716" x2="65" y2="716" stroke="#d62828" stroke-width="4"/><text x="72" y="720">5V power</text>
+    <line x1="160" y1="716" x2="190" y2="716" stroke="#111" stroke-width="4"/><text x="197" y="720">GND (return path)</text>
+    <line x1="330" y1="716" x2="360" y2="716" stroke="#6b3b1f" stroke-width="4"/><text x="367" y="720">servo brown = GND</text>
+    <line x1="510" y1="716" x2="540" y2="716" stroke="#f08c00" stroke-width="4"/><text x="547" y="720">signal (instructions only)</text>
+    <line x1="720" y1="716" x2="750" y2="716" stroke="#888" stroke-width="6"/><text x="757" y="720">USB cable</text>
+  </g>
+</svg>
