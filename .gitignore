@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 data/calib.json
 recordings/
+ml/out/*_stdout.txt
