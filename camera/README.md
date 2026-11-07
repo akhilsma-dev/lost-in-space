@@ -85,11 +85,23 @@ whole screen. Screen pixel = 94" at 50 deg / 1920 px.
 
 Blob finding (~60 ms on a 1080p frame) dominates the frame time, not tetra3.
 
-**Real webcam: not yet measured.** No USB webcam was attached, and OpenCV was
-denied camera access in this session (`not authorized to capture video`), so
-the go/no-go (stars detected, solves?) and which controls actually lock on
-macOS are still open. Run `capture --probe` then `calibrate` then
-`solve_live --show --save-shot` on the box and fill these in.
+## Real camera, first try (2026-11-07): iPhone Continuity Camera, open room, no box
+
+`camera/box_test.sh [index]` runs the whole check (probe, sim full screen,
+calibrate, solves) and logs to `recordings/box_test.log`. Run it from
+**Terminal.app**: processes started by other apps (e.g. the Claude app) never get
+the macOS camera prompt and stay `not authorized`.
+
+- Index 0 = MacBook camera, index 1 = iPhone (1920x1080 @ 30 fps).
+- **No control locks on macOS**: auto exposure, autofocus and auto WB were all
+  refused (`set` returned False, readback -1) on both cameras. Plan for AE/AF.
+- The iPhone takes ~1 s to deliver non-black frames; `Camera` now waits for one.
+- Phone handheld-ish, ~20 cm from a glossy MacBook screen in a lit room:
+  **no-go**. Checkerboard was cropped (camera too close) so calibration failed;
+  the sky frame was dominated by ceiling-light reflections, smudges and dust:
+  1528 blobs, no tetra3 solve (even uncalibrated, FOV 40-70).
+- Next: the dark box (or a dark cloth hood over phone + screen), clean screen,
+  camera far enough back to see the whole screen, then re-run.
 
 ## Gotchas found on the way
 

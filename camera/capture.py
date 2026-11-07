@@ -53,10 +53,14 @@ class Camera:
                                 ("focus", cv2.CAP_PROP_FOCUS, focus), ("wb_temperature", cv2.CAP_PROP_WB_TEMPERATURE, wb)):
             if val is not None:
                 self._set(name, prop, val)
-        # first frames after open are often black / still adjusting
-        for _ in range(5):
-            self.cap.read()
+        # first frames after open are black / still adjusting; an iPhone (Continuity Camera)
+        # takes ~1 s to deliver real frames, so wait for a non-black one (up to 3 s)
+        end = time.time() + 3.0
         ok, frame = self.cap.read()
+        while time.time() < end and (not ok or frame.max() == 0):
+            ok, frame = self.cap.read()
+        for _ in range(5):  # let auto-exposure settle a little
+            ok, frame = self.cap.read()
         if not ok:
             raise RuntimeError(f"camera {index} opened but returned no frame")
         self.h, self.w = frame.shape[:2]
