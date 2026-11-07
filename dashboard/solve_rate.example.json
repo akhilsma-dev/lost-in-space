@@ -1,0 +1,8 @@
+{
+  "title": "Solve rate under heavy glare + 10 deg/s tumble",
+  "note": "EXAMPLE NUMBERS - replace with the real benchmark (copy to dashboard/solve_rate.json)",
+  "rows": [
+    {"label": "tetra3 alone", "rate": 0.42, "n": 500},
+    {"label": "tetra3 + CNN", "rate": 0.91, "n": 500}
+  ]
+}
