@@ -6,3 +6,4 @@ __pycache__/
 data/calib.json
 recordings/
 ml/out/*_stdout.txt
+data/stellarium/images/
