@@ -298,6 +298,8 @@ demo/fake_demo.sh --nav        # everything, no camera; dashboard POSITION panel
     `--nav-slew-rate` (20 deg/s), tracked all the way; the `--nav-scan` dwell (2 s in `fake_demo.sh --nav`)
     starts on arrival. A sweep starts at the scan pointing nearest the current view; a full sweep takes about
     35-40 s. `--nav-slew-rate 0` uses `point` teleports instead. A flare during a sweep restarts it.
+  - Each locked frame with a fix carries `planets_px`: `[[x, y, name], ...]`, screen px where the fix's bodies
+    should be, from the estimated position (light time included) and attitude. The dashboard marks them.
   - `--nav-scan-mode button` (what `fake_demo.sh --nav` uses with the virtual console): no automatic scan.
     WHERE AM I? on the console sends `whereami` (bridge → UDP 5011, `--nav-cmd-port`); the solver forgets
     old sightings and runs one 8-pointing sweep. Sightings are kept until the next press (or a flare with

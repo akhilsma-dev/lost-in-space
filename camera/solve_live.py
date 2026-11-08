@@ -514,7 +514,7 @@ class FrameSender:
         hdr = {"t": t, "w": small.shape[1], "h": small.shape[0], "scale": s, "sw": sw, "sh": sh,
                "screen_to_cam": None if H is None else np.linalg.inv(H).tolist(),
                "cam_cents": np.round(np.asarray(c_cam[:100], float).reshape(-1, 2) * s, 1).tolist(),
-               "est": {k: est.get(k) for k in ("status", "stage", "ra", "dec", "roll", "fov", "centroids")}}
+               "est": {k: est.get(k) for k in ("status", "stage", "ra", "dec", "roll", "fov", "centroids", "planets_px")}}
         hb = json.dumps(hdr, separators=(",", ":")).encode()
         try:
             self.sock.sendto(struct.pack(">I", len(hb)) + hb + buf.tobytes(), ("127.0.0.1", self.port))
@@ -851,6 +851,14 @@ def main():
                             and nav_worker.submit(navi, gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)):
                         nav_t = time.time()
                 msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
+                if navi is not None and status == "LOCK":   # identified planets in this frame, from the estimates
+                    try:
+                        msg["planets_px"] = navi.planets_in_view(from_radecroll(msg["ra"], msg["dec"], msg["roll"]))
+                    except Exception as e:   # display only: never let it stop the solver
+                        msg["planets_px"] = []
+                        if not getattr(navi, "_piv_warned", False):
+                            navi._piv_warned = True
+                            print("[nav] planets_in_view:", repr(e))
                 if a.nav_scan > 0:
                     msg["nav"]["scan"] = {"mode": a.nav_scan_mode, "active": bool(active) if button else True,
                                           "step": min(scan_i - scan_base, N_SCAN) if button else scan_i % N_SCAN,

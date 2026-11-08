@@ -4,7 +4,7 @@
 const $ = (id) => document.getElementById(id);
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const C = { lock: css("--lock"), lost: css("--lost"), search: css("--search"), con: css("--con"),
-            cent: css("--cent"), truth: css("--truth"), dim: css("--dim"), edge: css("--edge"), nosig: css("--nosig") };
+            cent: css("--cent"), planet: css("--planet"), truth: css("--truth"), dim: css("--dim"), edge: css("--edge"), nosig: css("--nosig") };
 
 let S = null;          // latest snapshot
 let lastMsg = 0;       // wall time we last heard from the server
@@ -188,6 +188,18 @@ function drawSky(ctx, bx, by, bw, bh, img, v, o, bore, alpha = 0.9, filter = "no
       const tw = ctx.measureText(name).width;
       ctx.fillRect(X(x) + 13, Y(y) - 15, tw + 8, 18);
       ctx.fillStyle = "#d6ffe4"; ctx.fillText(name, X(x) + 17, Y(y) - 6);
+    }
+  }
+  if (o && o.planets && o.planets.length) {   // planets the navigator identified, where the estimates put them
+    ctx.strokeStyle = C.planet; ctx.lineWidth = 2;
+    ctx.font = "700 14px -apple-system, Helvetica, Arial"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    for (const [x, y, name] of o.planets) {
+      ctx.beginPath(); ctx.arc(X(x), Y(y), 14, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X(x) - 20, Y(y)); ctx.lineTo(X(x) - 16, Y(y)); ctx.moveTo(X(x) + 16, Y(y)); ctx.lineTo(X(x) + 20, Y(y));
+      ctx.moveTo(X(x), Y(y) - 20); ctx.lineTo(X(x), Y(y) - 16); ctx.moveTo(X(x), Y(y) + 16); ctx.lineTo(X(x), Y(y) + 20); ctx.stroke();
+      const label = name.toUpperCase(), tw = ctx.measureText(label).width;
+      ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(X(x) + 22, Y(y) - 10, tw + 8, 20);
+      ctx.fillStyle = C.planet; ctx.fillText(label, X(x) + 26, Y(y));
     }
   }
   if (bore) {   // boresight reticle

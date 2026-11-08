@@ -306,7 +306,8 @@ class Hub(threading.Thread):
                        "cons": [[*m([c[:2]])[0].tolist(), c[2]] for c in o["cons"]],
                        "ident": m(o["ident"]).tolist(),
                        "labels": [[*m([lb[:2]])[0].tolist(), lb[2]] for lb in o["labels"]],
-                       "bore": m([[f["sw"] / 2, f["sh"] / 2]])[0].tolist()}
+                       "bore": m([[f["sw"] / 2, f["sh"] / 2]])[0].tolist(),
+                       "planets": [[*m([p[:2]])[0].tolist(), p[2]] for p in e.get("planets_px") or []]}
         view = {"w": f["w"], "h": f["h"], "frame_id": self.cam.count, "cents": f.get("cam_cents") or [],
                 "overlay": overlay, "status": e.get("status"), "calibrated": Hs is not None}
         self._cam_cache = (self.cam.count, view)
@@ -367,6 +368,7 @@ class Hub(threading.Thread):
         cents = (es or {}).get("centroids") or []
         if es and es.get("status") == "LOCK" and es.get("ra") is not None:
             overlay = self.sky.overlay(att_from(es), w, h, fov, cents)
+            overlay["planets"] = es.get("planets_px") or []   # identified planets (solve_live --nav), screen px
 
         # attitudes for the 3D view (matrix columns: right, down, boresight in J2000)
         ta, ea = att_from(paired), att_from(es) if es and es.get("status") == "LOCK" else None
