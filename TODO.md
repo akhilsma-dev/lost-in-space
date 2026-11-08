@@ -1,6 +1,16 @@
 # Lost in Space — TODO
 
-Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goes to main.
+Status as of 2026-11-08. Rule: work on a branch, a human reviews it, then it goes to main.
+
+## Judge QA fixes (2026-11-08, see `docs/qa/judge-review-2026-11-08.md`, scored 6.3/10)
+- [ ] **Knob dead in `--nav` mode:** nav-scan `point` zeroes the tumble every 3 s. No scan pointings while knob rate > 0, or scan from a button
+- [ ] **Put the CNN on screen:** `--starnet` in the demo if it holds 2-5 Hz, classical/CNN toggle, real numbers in the SOLVE RATE panel (no "pending")
+- [ ] Prepare the answer for StarNet's Stellarium result (38% vs tuned tetra3 100%)
+- [ ] Voice / glare from perception: callouts from solver state, not sim truth; glare that visibly drops confidence
+- [ ] Solver without truth: measured rate for detumble, calibrated FOV instead of the truth packet's
+- [ ] Drop `--flare-moves` teleport: keep the position through a flare, show the re-fix agreeing
+- [ ] Polish: POSITION title clipped at 1600x900, planet label overlap, console panel blank on load, caption for the ~6 s lock
+- [ ] `fake_demo.sh` pkill hits other worktrees' demos: scope it to this checkout
 
 ## Planning & data
 - [x] Plan (`plan.md`) and feasibility review (`feasibility-review.md`)
