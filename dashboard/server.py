@@ -280,7 +280,7 @@ class Hub(threading.Thread):
                 "est": {"ok": es is not None, "hz": self.est.hz(), "age": _age(self.est), "error": self.est.error,
                         "mock": bool((es or {}).get("mock"))},
             },
-            "truth": (tr or paired) and {k: (tr or paired).get(k) for k in ("ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "mode", "w", "h", "frame")},
+            "truth": (tr or paired) and {k: (tr or paired).get(k) for k in ("ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "flash", "mode", "w", "h", "frame")},
             "paired": paired and {k: paired.get(k) for k in ("ra", "dec", "roll")},
             "est": es and {k: es.get(k) for k in ("ra", "dec", "roll", "fov", "status", "confidence", "matches",
                                                   "prob", "rmse", "solve_ms", "n_centroids", "frontend")},
@@ -344,7 +344,9 @@ def make_handler(hub, config):
                 return self._send(200, j, "image/jpeg") if j else self._send(404, b"", "text/plain")
             f = (STATIC / path.lstrip("/")).resolve()
             if STATIC in f.parents and f.is_file():
-                ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css"}.get(
+                ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
+                         ".json": "application/json", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+                         ".wav": "audio/wav"}.get(
                     f.suffix, "application/octet-stream")
                 return self._send(200, f.read_bytes(), ctype)
             self._send(404, b"not found", "text/plain")
@@ -379,7 +381,8 @@ def open_fullscreen(url):
     if pathlib.Path(chrome).exists():
         prof = pathlib.Path.home() / ".cache" / "lis-dashboard-chrome"
         subprocess.Popen([chrome, "--kiosk", f"--app={url}", f"--user-data-dir={prof}",
-                          "--no-first-run", "--disable-session-crashed-bubble"],
+                          "--no-first-run", "--disable-session-crashed-bubble",
+                          "--autoplay-policy=no-user-gesture-required"],   # voice callouts without a click
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     elif shutil.which("chromium"):
         subprocess.Popen(["chromium", "--kiosk", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -94,8 +94,10 @@ class MockTruth:
         self.t = time.time()
         self.next_event = self.t + 6
         self._flare()
+        self.flash_until = 0.0     # no whiteout for the starting attitude
 
     def _flare(self):
+        self.flash_until = time.time() + 1.2   # sensor whiteout, like sim.live's flare
         self.att = random_attitude(self.rng)
         ax = self.rng.normal(size=3)
         self.axis = ax / np.linalg.norm(ax)
@@ -116,7 +118,8 @@ class MockTruth:
         ra, dec, roll = to_radecroll(self.att)
         self.frame += 1
         return {"frame": self.frame, "t": now, "ra": ra, "dec": dec, "roll": roll, "fov": self.fov,
-                "rate_dps": self.rate, "exposure": 0.1, "glare": self.glare, "mode": "sky",
+                "rate_dps": self.rate, "exposure": 0.1, "glare": self.glare,
+                "flash": 255.0 if now < self.flash_until else 0.0, "mode": "sky",
                 "w": self.w, "h": self.h}
 
 

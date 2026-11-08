@@ -9,7 +9,7 @@
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
 #
-# Dashboard: http://localhost:8080   Virtual console: http://localhost:8081   Logs: $LOG_DIR (default: a temp folder, printed at start)
+# Dashboard: http://localhost:8080 (V = voice callouts on/off)   Virtual console: http://localhost:8081   Logs: $LOG_DIR (default: a temp folder, printed at start)
 # Ctrl+C (or q in keyboard mode) stops everything.
 set -euo pipefail
 cd "$(dirname "$0")/.."
