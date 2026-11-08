@@ -814,11 +814,11 @@ def main():
                                              sigma_arcsec=a.nav_sigma,
                                              memory_s=a.nav_memory or (1e9 if button else
                                                                        12 * a.nav_scan if a.nav_scan > 0 else 60.0))
+                        navi.finder.centroid_kw = solver.centroid_kw
+                        nav_worker = NavWorker()      # one worker thread for the whole run
                         print(f"[nav] navigator ready ({src.sw}x{src.sh}, FOV {fov} deg)")
                     if truth and truth.get("jd"):
                         navi.jd = truth["jd"]   # the spacecraft clock; the sim's epoch
-                        navi.finder.centroid_kw = solver.centroid_kw
-                        nav_worker = NavWorker()
                     # the candidate pass costs 100+ ms: it runs in a worker so it never stalls the camera loop,
                     # not while spinning (streaked frames give junk candidates) and, in button mode, only
                     # during a WHERE AM I? sweep (no sightings are wanted between sweeps)
