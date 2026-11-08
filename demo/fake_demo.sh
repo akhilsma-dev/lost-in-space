@@ -9,7 +9,8 @@
 #   demo/fake_demo.sh --starnet  StarNet (ml/, our CNN) finds the stars, tetra3 matches them (GPU/MPS if present)
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --models   all star finders loaded; switch CLASSIC / TUNED / StarNet live on the dashboard
-#   demo/fake_demo.sh --webcam   the solver sees the sim through the synthetic webcam (like the real box)
+#   demo/fake_demo.sh --webcam   start with the solver seeing the sim through the synthetic webcam (like the real box);
+#                                either way the CLEAN / WEBCAM switch on the dashboard's camera view flips it live
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
 #   demo/fake_demo.sh --nav      position from planets: hidden position + planets on screen; WHERE AM I? on the
 #                                virtual console slews through 8 ecliptic pointings (20 deg/s, 2 s look each; paused while spinning) and
@@ -39,7 +40,7 @@ for arg in "$@"; do
     --nav)   NAV=1 ;;
     --models) MODELS=1 ;;
     --webcam) WEBCAM=1 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg (see --help)"; exit 1 ;;
   esac
 done

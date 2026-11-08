@@ -111,6 +111,7 @@ function updateText() {
   $("sess").textContent = st.session_n ? `${st.session_lock}/${st.session_n} locked` : "—";
 
   updateSolveRate();
+  updateCamSwitch();
   updateNavText();
 }
 
@@ -124,6 +125,27 @@ function setModel(m) {
   fetch("/cmd", { method: "POST", body: JSON.stringify({ detector: m }) }).catch(() => {});
   updateSolveRate();
 }
+// CLEAN / WEBCAM: what the solver films (solve_live --follow-sim): the screen pixels as they are, or the
+// screen through the synthetic webcam (keystone, defocus, noise, JPEG) like the real box
+let camPending = null;
+function setCamera(m) {
+  camPending = { m, t: performance.now() };
+  fetch("/cmd", { method: "POST", body: JSON.stringify({ camera: m }) }).catch(() => {});
+  updateCamSwitch();
+}
+function updateCamSwitch() {
+  const e = (S && S.est) || {}, cams = Array.isArray(e.cameras) ? e.cameras : [], cur = e.camera, sw = $("camSwitch");
+  if (camPending && (cur === camPending.m || performance.now() - camPending.t > 5000)) camPending = null;
+  sw.hidden = cams.length < 2;
+  if (cams.length < 2) return;
+  const html = cams.map((c) => `<button data-m="${c}" class="${c === cur ? "on" : ""}${camPending && camPending.m === c ? " wait" : ""}" ` +
+    `title="${c === "webcam" ? "solve through the synthetic webcam, like the real box" : "solve on the clean screen pixels"}">${c.toUpperCase()}</button>`).join("");
+  if (sw.dataset.html !== html) {
+    sw.dataset.html = html; sw.innerHTML = html;
+    sw.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setCamera(b.dataset.m)));
+  }
+}
+
 function updateSolveRate() {
   const sr = S.solve_rate, st = S.stats, e = S.est || {};
   const dets = Array.isArray(e.detectors) ? e.detectors : [], cur = e.detector;
@@ -240,7 +262,9 @@ function drawView() {
   if (cam) {
     // main: the frame the solver saw, overlay from the estimate solved on that same frame
     $("viewTitle").textContent = "CAMERA VIEW";
-    $("viewNote").textContent = "what the solver sees · overlay from the ESTIMATED attitude";
+    $("viewNote").textContent = S.est && S.est.camera === "webcam"
+      ? "what the solver sees · through the synthetic webcam · overlay from the ESTIMATED attitude"
+      : "what the solver sees · overlay from the ESTIMATED attitude";
     const o = cam.overlay;
     r = drawSky(ctx, 0, 0, W, H, camFrame.img, cam, o, o && o.bore, 1);
     // inset: the real sky on the box screen (hidden truth), no overlay

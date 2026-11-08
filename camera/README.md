@@ -139,7 +139,10 @@ Blob finding (~60 ms on a 1080p frame) dominates the frame time, not tetra3.
 Each estimate carries `detector`, `detectors` and `good` (this frame alone solved trustworthily).
 `--sim-camera` now also works with `--follow-sim`: each sim frame is filmed by `camera.fakecam` (keystone,
 defocus, vignetting, noise, JPEG; ~50 ms) and the camera→screen homography is auto-fitted on its checkerboard,
-so the live demo sees what the box's webcam would (`fake_demo.sh --webcam`; ~8-10 solves/s).
+so the live demo sees what the box's webcam would (`fake_demo.sh --webcam`; ~8-10 solves/s). With `--follow-sim`
+it is also switchable live: `camera clean|webcam` on the command port (the dashboard's CLEAN / WEBCAM switch in
+the camera view's header); the star finder background follows (fast for clean, tetra3's local filter for the
+webcam), and a lock survives the switch. Estimates carry `camera` and `cameras`.
 
 Measured live at 20 deg/s through the webcam (25 s per model, 2026-11-08): with tetra3 (classic or tuned) the
 lock broke within seconds and recovery detumbled the craft; StarNet held LOCK for the full 25 s in one run and lost

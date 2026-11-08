@@ -145,6 +145,12 @@ body.with-nav #dynPanel, body.with-nav #att3dPanel { display: none; }
   letter-spacing: .06em; color: var(--c); background: transparent; border: 1.5px solid color-mix(in srgb, var(--c) 45%, transparent); }
 .srswitch button.on { background: color-mix(in srgb, var(--c) 18%, transparent); border-color: var(--c); box-shadow: 0 0 12px color-mix(in srgb, var(--c) 35%, transparent); }
 .srswitch button.wait { opacity: .6; }
+.camswitch { display: inline-flex; gap: 4px; margin: 0 auto 0 14px; align-self: center; }
+.camswitch button { padding: 3px 9px; border-radius: 5px; cursor: pointer; font: 800 10px -apple-system, Helvetica, Arial;
+  letter-spacing: .1em; color: var(--dim); background: transparent; border: 1px solid var(--edge); }
+.camswitch button.on { color: var(--text); background: color-mix(in srgb, var(--con) 22%, transparent); border-color: var(--con); }
+.camswitch button.wait { opacity: .6; }
+.camswitch button:focus-visible { outline: 2px solid var(--con); outline-offset: 2px; }
 .srswitch button:focus-visible { outline: 2px solid var(--c); outline-offset: 2px; }
 
 #consolePanel { grid-area: console; display: flex; flex-direction: column; }

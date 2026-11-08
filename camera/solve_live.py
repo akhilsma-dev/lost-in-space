@@ -138,18 +138,37 @@ class FollowSource:
         self.H = None
         self.last_frame = None
         self.bus, self.bus_name, self.render_ms = None, None, 0.0
-        self.cam = None
+        self.cam, self._cam, self._cam_H = None, None, None   # active webcam (None = clean screen), built one
         if a.sim_camera:   # film the screen with the synthetic webcam, like the real box
-            self._make_cam()
+            self.set_camera("webcam")
         print(f"[follow-sim] following sim.live: {self.sw}x{self.sh}, FOV {self.fov} deg")
+
+    @property
+    def camera_mode(self):
+        return "webcam" if self.cam is not None else "clean"
 
     def _make_cam(self):
         from camera.calibrate import fit
         from camera.fakecam import FakeCamera
-        self.cam = FakeCamera(self.sw, self.sh, seed=self.a.seed or 0)
-        r = fit(self.cam.view(checkerboard(self.sw, self.sh)[0]), self.sw, self.sh)
-        self.H = r["H"]
-        print(f"[sim-camera] filming the sim through the synthetic webcam; auto-calibrated: RMS {r['rms']:.3f} screen px")
+        self._cam = FakeCamera(self.sw, self.sh, seed=self.a.seed or 0)
+        r = fit(self._cam.view(checkerboard(self.sw, self.sh)[0]), self.sw, self.sh)
+        self._cam_H = r["H"]
+        print(f"[sim-camera] synthetic webcam auto-calibrated: RMS {r['rms']:.3f} screen px")
+
+    def set_camera(self, mode):
+        """'webcam': film each sim frame with the synthetic webcam (keystone, defocus, noise, JPEG) and solve
+        through its homography, like the real box; 'clean': the screen pixels as they are. Live switchable
+        ('camera <mode>' on the solver's command port). Returns True if it changed."""
+        if mode not in ("clean", "webcam") or mode == self.camera_mode:
+            return False
+        if mode == "webcam":
+            if self._cam is None:
+                self._make_cam()
+            self.cam, self.H = self._cam, self._cam_H
+        else:
+            self.cam, self.H = None, None
+        print(f"[follow-sim] camera: {mode}")
+        return True
 
     def _film(self, t, img, tr):
         return (t, img, tr) if self.cam is None else (t, self.cam.view(img), tr)
@@ -183,8 +202,10 @@ class FollowSource:
         if (tr["w"], tr["h"], tr["fov"]) != (self.sw, self.sh, self.fov):
             self.sw, self.sh, self.fov = tr["w"], tr["h"], tr["fov"]
             self.sky = SkyRenderer(self.sw, self.sh, self.fov)
-            if self.cam is not None:
-                self._make_cam()
+            was, self._cam = self.camera_mode, None
+            if was == "webcam":
+                self.cam = None
+                self.set_camera("webcam")
         _r0 = time.perf_counter()
         img = self._bus_frame(tr)
         if img is not None:
@@ -273,6 +294,11 @@ class Solver:
         yx = self.starnet.star_centroids(img)
         c = (np.asarray(yx, np.float64).reshape(-1, 2) - 0.5)[:, ::-1].copy()  # tetra3 -> OpenCV convention
         return c, (c if H is None else warp_points(c, np.linalg.inv(H)))
+
+    def set_webcam(self, webcam):
+        """The rendered sky is black (fast global background); a camera frame needs tetra3's local filter."""
+        if self.a.centroid_mode == "auto":
+            self.centroid_kw = {} if webcam else {"bg_sub_mode": "global_mean", "binary_open": False}
 
     def set_mode(self, mode):
         if mode in self.modes and mode != self.mode:
@@ -764,12 +790,14 @@ def main():
     sweep_left, scan_paused, scan_base = 0, False, 0   # button mode: pointings left in the sweep, its first one
     slew_t0, slew_until = 0.0, 0.0             # our own scan slew in progress (until arrival or this deadline)
     nav_in = None     # solver command port: 'whereami' (WHERE AM I?), 'detector <mode>' (--models)
-    if button or len(solver.modes) > 1:
+    follow = isinstance(src, FollowSource)
+    if button or len(solver.modes) > 1 or follow:
         nav_in = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         nav_in.bind(("127.0.0.1", a.nav_cmd_port))
         nav_in.setblocking(False)
         print(f"[cmd] solver commands on UDP {a.nav_cmd_port}: " + ", ".join(
-            (["'whereami'"] if button else []) + ([f"'detector {'|'.join(solver.modes)}'"] if len(solver.modes) > 1 else [])))
+            (["'whereami'"] if button else []) + ([f"'detector {'|'.join(solver.modes)}'"] if len(solver.modes) > 1 else [])
+            + (["'camera clean|webcam'"] if follow else [])))
     where_req = False
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0, "acq": []}
     shot, shot_lock = None, False
@@ -785,6 +813,10 @@ def main():
                     where_req = True
                 elif cmd[:1] == ["detector"] and len(cmd) > 1:
                     solver.set_mode(cmd[1])
+                elif cmd[:1] == ["camera"] and len(cmd) > 1 and follow and src.set_camera(cmd[1]):
+                    solver.set_webcam(src.camera_mode == "webcam")
+                    if navi is not None:
+                        navi.finder.H = src.H   # planet candidates: same camera -> screen mapping
             _p0 = time.perf_counter()
             t, gray, truth = src.read()
             _p1 = time.perf_counter()
@@ -819,6 +851,7 @@ def main():
                    "n_centroids": len(c_scr), "centroids": np.round(c_scr[:100], 2).tolist(),
                    "truth": truth, "err_arcsec": None, "roll_err_deg": None, "detector": solver.mode,
                    "detectors": solver.modes, "good": solver.last_good,
+                   "camera": src.camera_mode if follow else None, "cameras": ["clean", "webcam"] if follow else None,
                    "detect_ms": round(solver.detect_ms, 1) if solver.mode == "starnet" else None,
                    # body rate measured from consecutive solves (deg/s, body frame x right, y down, z boresight)
                    "omega_dps": np.round(np.degrees(solver.acq.w), 3).tolist() if status == "LOCK" else None}

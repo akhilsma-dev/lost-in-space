@@ -405,7 +405,7 @@ class Hub(threading.Thread):
             "paired": paired and {k: paired.get(k) for k in ("ra", "dec", "roll")},
             "est": es and {k: es.get(k) for k in ("ra", "dec", "roll", "fov", "status", "stage", "confidence", "matches",
                                                   "prob", "rmse", "solve_ms", "n_centroids", "frontend", "omega_dps",
-                                                  "detector", "detectors", "detect_ms")},
+                                                  "detector", "detectors", "detect_ms", "camera", "cameras")},
             "state": state, "since_lock": None if not self.ever_lock else now - self.last_lock,
             "err": err,
             "cam": self._cam_view(),
@@ -462,12 +462,17 @@ def make_handler(hub, config):
                 return self._send(404, b"not found", "text/plain")
             try:
                 body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 256)) or b"{}")
-                det = str(body.get("detector", ""))
+                det, cam = str(body.get("detector", "")), str(body.get("camera", ""))
             except (ValueError, AttributeError):
-                det = ""
-            if det not in ("classic", "tuned", "starnet"):
-                return self._send(400, b"expected {\"detector\": \"classic|tuned|starnet\"}", "text/plain")
-            cmd_sock.sendto(f"detector {det}".encode(), ("127.0.0.1", config["solver_cmd_port"]))
+                det = cam = ""
+            if det in ("classic", "tuned", "starnet"):
+                line = f"detector {det}"
+            elif cam in ("clean", "webcam"):     # solve_live --follow-sim: film the sim through the synthetic webcam
+                line = f"camera {cam}"
+            else:
+                return self._send(400, b'expected {"detector": "classic|tuned|starnet"} or {"camera": "clean|webcam"}',
+                                  "text/plain")
+            cmd_sock.sendto(line.encode(), ("127.0.0.1", config["solver_cmd_port"]))
             self._send(204, b"", "text/plain")
 
         def do_GET(self):
