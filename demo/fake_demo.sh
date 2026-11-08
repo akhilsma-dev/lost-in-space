@@ -4,6 +4,7 @@
 #   demo/fake_demo.sh            keyboard plays the console (f = flare, 0-1023 = tumble knob, q = quit)
 #   demo/fake_demo.sh --board    real Arduino console on USB instead of the keyboard
 #   demo/fake_demo.sh --classic  plain tetra3 blob filter (loses lock near 5 deg/s; default keeps blur streaks)
+#   demo/fake_demo.sh --starnet  StarNet (ml/, our CNN) finds the stars, tetra3 matches them (GPU/MPS if present)
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
 #
@@ -17,12 +18,13 @@ if [[ -z "$PY" ]]; then
   if [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python; fi
 fi
 
-BOARD=0 TUNED=1 FULL=0 OPEN=0
+BOARD=0 TUNED=1 STARNET=0 FULL=0 OPEN=0
 for arg in "$@"; do
   case "$arg" in
     --board) BOARD=1 ;;
     --tuned) TUNED=1 ;;
     --classic) TUNED=0 ;;
+    --starnet) STARNET=1 ;;
     --full)  FULL=1 ;;
     --open)  OPEN=1 ;;
     -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
@@ -56,18 +58,28 @@ DASH_ARGS=(); [[ $OPEN == 1 ]] && DASH_ARGS+=(--open)
 "$PY" -u -m dashboard ${DASH_ARGS[@]+"${DASH_ARGS[@]}"} > "$LOG_DIR/dashboard.log" 2>&1 &
 PIDS+=($!)
 
-SOLVE_ARGS=(--follow-sim --quiet); [[ $TUNED == 1 ]] && SOLVE_ARGS+=(--max-area 5000)
+SOLVE_ARGS=(--follow-sim --quiet)
+if [[ $STARNET == 1 ]]; then SOLVE_ARGS+=(--detector starnet); SOLVER_NAME=StarNet
+elif [[ $TUNED == 1 ]]; then SOLVE_ARGS+=(--max-area 5000); SOLVER_NAME=tuned
+else SOLVER_NAME=classical; fi
 "$PY" -u -m camera.solve_live "${SOLVE_ARGS[@]}" > "$LOG_DIR/solve.log" 2>&1 &
 PIDS+=($!)
 
-sleep 3
-for p in "${PIDS[@]}"; do
-  if ! kill -0 "$p" 2>/dev/null; then
-    echo "[demo] a component exited early; logs in $LOG_DIR:"; tail -n 5 "$LOG_DIR"/*.log; exit 1
-  fi
+# Wait until the solver has produced its first answer (StarNet takes ~10-15 s to load), so the
+# console is only handed over once the whole chain is live.
+echo "[demo] starting ($SOLVER_NAME solver)..."
+for i in $(seq 1 120); do
+  for p in "${PIDS[@]}"; do
+    if ! kill -0 "$p" 2>/dev/null; then
+      echo "[demo] a component exited early; logs in $LOG_DIR:"; tail -n 5 "$LOG_DIR"/*.log; exit 1
+    fi
+  done
+  grep -qE "^(LOCK|LOST) " "$LOG_DIR/solve.log" 2>/dev/null && break
+  [[ $i == 120 ]] && { echo "[demo] solver gave no answer in 60 s; see $LOG_DIR/solve.log"; exit 1; }
+  sleep 0.5
 done
 
-echo "[demo] sim, dashboard, solver running  (solver: $([[ $TUNED == 1 ]] && echo tuned || echo classical))"
+echo "[demo] sim, dashboard, solver running  (solver: $SOLVER_NAME)"
 echo "[demo] dashboard: http://localhost:8080    logs: $LOG_DIR"
 if [[ $BOARD == 1 ]]; then
   echo "[demo] console: real board over USB"
