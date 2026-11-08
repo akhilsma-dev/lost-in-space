@@ -555,6 +555,32 @@ class LiveNavigator:
             self.fix, self.fix_note = nav, "fix"
             time.sleep(0.5)   # at most ~2 fixes / s
 
+    def planets_in_view(self, att, margin=0.0):
+        """Where the bodies of the current fix should be in a frame at attitude att (screen px), from the
+        ESTIMATED position (light time included) and the estimated attitude: [[x, y, name], ...]. Directions
+        are cached per fix and refreshed every ~5 s (planets barely move); projecting is per frame."""
+        f = self.fix
+        if f is None:
+            return []
+        key = (id(f), round(self.jd, 4))
+        if getattr(self, "_piv_key", None) != key:
+            # a fix may name a blend of bodies too close to separate ("Earth+Moon"): mark their mean direction
+            parts = {p for n in f["names"] for p in str(n).split("+")}
+            app = self.eph.apparent(f["P"], self.jd, bodies=sorted(parts))
+            dirs = []
+            for n in f["names"]:
+                d = np.sum([app[p]["dir"] for p in str(n).split("+")], axis=0)
+                dirs.append(d / np.linalg.norm(d))
+            self._piv_names = [str(n) for n in f["names"]]
+            self._piv_dirs = np.array(dirs).reshape(-1, 3)
+            self._piv_key = key
+        if not len(self._piv_dirs):
+            return []
+        sky = self.finder.sky
+        px, py, front = sky.project(self._piv_dirs, att)
+        ok = front & (px > -margin) & (px < sky.w + margin) & (py > -margin) & (py < sky.h + margin)
+        return [[round(float(x), 1), round(float(y), 1), n] for x, y, n, k in zip(px, py, self._piv_names, ok) if k]
+
     def packet(self, truth=None):
         """The "nav" block of a solve_live estimate packet."""
         with self.lock:

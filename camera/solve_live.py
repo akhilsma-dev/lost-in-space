@@ -138,7 +138,40 @@ class FollowSource:
         self.H = None
         self.last_frame = None
         self.bus, self.bus_name, self.render_ms = None, None, 0.0
+        self.cam, self._cam, self._cam_H = None, None, None   # active webcam (None = clean screen), built one
+        if a.sim_camera:   # film the screen with the synthetic webcam, like the real box
+            self.set_camera("webcam")
         print(f"[follow-sim] following sim.live: {self.sw}x{self.sh}, FOV {self.fov} deg")
+
+    @property
+    def camera_mode(self):
+        return "webcam" if self.cam is not None else "clean"
+
+    def _make_cam(self):
+        from camera.calibrate import fit
+        from camera.fakecam import FakeCamera
+        self._cam = FakeCamera(self.sw, self.sh, seed=self.a.seed or 0)
+        r = fit(self._cam.view(checkerboard(self.sw, self.sh)[0]), self.sw, self.sh)
+        self._cam_H = r["H"]
+        print(f"[sim-camera] synthetic webcam auto-calibrated: RMS {r['rms']:.3f} screen px")
+
+    def set_camera(self, mode):
+        """'webcam': film each sim frame with the synthetic webcam (keystone, defocus, noise, JPEG) and solve
+        through its homography, like the real box; 'clean': the screen pixels as they are. Live switchable
+        ('camera <mode>' on the solver's command port). Returns True if it changed."""
+        if mode not in ("clean", "webcam") or mode == self.camera_mode:
+            return False
+        if mode == "webcam":
+            if self._cam is None:
+                self._make_cam()
+            self.cam, self.H = self._cam, self._cam_H
+        else:
+            self.cam, self.H = None, None
+        print(f"[follow-sim] camera: {mode}")
+        return True
+
+    def _film(self, t, img, tr):
+        return (t, img, tr) if self.cam is None else (t, self.cam.view(img), tr)
 
     def _bus_frame(self, tr):
         name = tr.get("shm") if not self.a.no_shm else None
@@ -169,11 +202,15 @@ class FollowSource:
         if (tr["w"], tr["h"], tr["fov"]) != (self.sw, self.sh, self.fov):
             self.sw, self.sh, self.fov = tr["w"], tr["h"], tr["fov"]
             self.sky = SkyRenderer(self.sw, self.sh, self.fov)
+            was, self._cam = self.camera_mode, None
+            if was == "webcam":
+                self.cam = None
+                self.set_camera("webcam")
         _r0 = time.perf_counter()
         img = self._bus_frame(tr)
         if img is not None:
             self.render_ms = (time.perf_counter() - _r0) * 1000
-            return time.time(), img, tr
+            return self._film(time.time(), img, tr)
         att = from_radecroll(tr["ra"], tr["dec"], tr["roll"])
         omega = np.radians(tr.get("omega") or [0.0, 0.0, 0.0])
         from sim.planets import extra_from_list   # planets on screen (sim.live --planets)
@@ -185,7 +222,7 @@ class FollowSource:
             img += float(tr["flash"])   # flare whiteout: the sensor is blinded
         out = SkyRenderer.to_u8(img)
         self.render_ms = (time.perf_counter() - _r0) * 1000
-        return time.time(), out, tr
+        return self._film(time.time(), out, tr)
 
     def close(self):
         pass
@@ -231,7 +268,18 @@ class Solver:
         print(f"[solver] star finder: {'fast (global background)' if fast else 'robust (local background)'}")
         self.t3 = load_tetra3()
         self.starnet = None
-        if a.detector == "starnet":
+        # star finder in front of tetra3's pattern match, switchable live with --models ('detector <mode>'):
+        #   classic = tetra3's blob finder as shipped (max area 100 px: fast tumble streaks are dropped)
+        #   tuned   = the same with streaks kept (--max-area, 5000 if not set higher than 100)
+        #   starnet = our CNN (ml/), on the frame warped to screen pixels
+        self.tuned_area = a.max_area if a.max_area > 100 else 5000
+        if a.models:
+            self.modes = ["classic", "tuned", "starnet"]
+        else:
+            self.modes = ["starnet" if a.detector == "starnet" else "tuned" if a.max_area > 100 else "classic"]
+        self.mode = "starnet" if a.detector == "starnet" else self.modes[0] if not a.models else "tuned"
+        self.last_good = False
+        if "starnet" in self.modes:
             from ml import detect
             detect.load()
             detect.star_centroids(np.zeros((64, 64), np.uint8))   # warm-up: the first call is ~2 s on MPS
@@ -247,8 +295,19 @@ class Solver:
         c = (np.asarray(yx, np.float64).reshape(-1, 2) - 0.5)[:, ::-1].copy()  # tetra3 -> OpenCV convention
         return c, (c if H is None else warp_points(c, np.linalg.inv(H)))
 
+    def set_webcam(self, webcam):
+        """The rendered sky is black (fast global background); a camera frame needs tetra3's local filter."""
+        if self.a.centroid_mode == "auto":
+            self.centroid_kw = {} if webcam else {"bg_sub_mode": "global_mean", "binary_open": False}
+
+    def set_mode(self, mode):
+        if mode in self.modes and mode != self.mode:
+            print(f"[solver] star finder: {self.mode} -> {mode}")
+            self.mode = mode
+
     def solve(self, gray, fov):
-        if self.starnet is not None:
+        self.detect_ms = 0.0
+        if self.mode == "starnet":
             t0 = time.perf_counter()
             c, c_cam = self.starnet_centroids(gray)
             self.detect_ms = (time.perf_counter() - t0) * 1000
@@ -258,7 +317,8 @@ class Solver:
                                                 solve_timeout=self.a.timeout_ms, **fov_kw)
                    if len(c) >= 4 else {"RA": None})
             return c, c_cam, res, (time.perf_counter() - t0) * 1000
-        c_cam = centroids(gray, max_returned=self.a.max_centroids, max_area=self.a.max_area, **self.centroid_kw)
+        c_cam = centroids(gray, max_returned=self.a.max_centroids,
+                          max_area=100 if self.mode == "classic" else self.tuned_area, **self.centroid_kw)
         if self.src.H is not None:
             c = warp_points(c_cam, self.src.H)
             keep = (c[:, 0] > -0.5) & (c[:, 0] < self.src.sw - 0.5) & (c[:, 1] > -0.5) & (c[:, 1] < self.src.sh - 0.5)
@@ -285,7 +345,9 @@ class Solver:
     def status(self, t, res, n_stars):
         """Acquisition state machine. Returns (status, confidence, stage).
         status is LOCK / SEARCH / LOST as before; stage says what the tracker is doing right now."""
-        return self.acq.update(t, res, n_stars, self.good(res))
+        conf = self.good(res)
+        self.last_good = conf is not None   # this frame alone: a trustworthy solve (live solve rate per model)
+        return self.acq.update(t, res, n_stars, conf)
 
 
 class Acquisition:
@@ -514,7 +576,7 @@ class FrameSender:
         hdr = {"t": t, "w": small.shape[1], "h": small.shape[0], "scale": s, "sw": sw, "sh": sh,
                "screen_to_cam": None if H is None else np.linalg.inv(H).tolist(),
                "cam_cents": np.round(np.asarray(c_cam[:100], float).reshape(-1, 2) * s, 1).tolist(),
-               "est": {k: est.get(k) for k in ("status", "stage", "ra", "dec", "roll", "fov", "centroids")}}
+               "est": {k: est.get(k) for k in ("status", "stage", "ra", "dec", "roll", "fov", "centroids", "planets_px")}}
         hb = json.dumps(hdr, separators=(",", ":")).encode()
         try:
             self.sock.sendto(struct.pack(">I", len(hb)) + hb + buf.tobytes(), ("127.0.0.1", self.port))
@@ -589,7 +651,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src_g = ap.add_argument_group("source")
     src_g.add_argument("--sim", action="store_true", help="render frames from sim.sky instead of a camera")
-    src_g.add_argument("--sim-camera", action="store_true", help="with --sim: pass frames through camera.fakecam")
+    src_g.add_argument("--sim-camera", action="store_true",
+                       help="with --sim or --follow-sim: film the screen with the synthetic webcam (camera.fakecam: "
+                            "keystone, defocus, vignetting, noise, JPEG), auto-calibrated on its checkerboard")
     src_g.add_argument("--follow-sim", action="store_true",
                        help="no camera: redraw the frames the running sim.live shows (from its truth packets)")
     src_g.add_argument("--no-shm", action="store_true",
@@ -613,6 +677,9 @@ def main():
     sol.add_argument("--fov-max-error", type=float, default=2.0)
     sol.add_argument("--detector", choices=["tetra3", "starnet"], default="tetra3",
                      help="star finder before tetra3's pattern match: tetra3's blob finder, or StarNet (ml/)")
+    sol.add_argument("--models", action="store_true",
+                     help="load all star finders (classic / tuned tetra3, StarNet) and switch live with "
+                          "'detector <mode>' on --nav-cmd-port (the dashboard's SOLVE RATE panel does this)")
     sol.add_argument("--centroid-mode", choices=["auto", "fast", "robust"], default="auto",
                      help="star finder background: fast = global (black rendered sky, ~4x faster), robust = "
                           "tetra3's local filter (real camera). auto: fast for --sim / --follow-sim")
@@ -663,6 +730,9 @@ def main():
                      help="drive sim.live through 8 ecliptic pointings, this many s each (0 = don't)")
     nav.add_argument("--nav-scan-mode", choices=["auto", "button"], default="auto",
                      help="auto: keep scanning; button: one sweep per 'whereami' on --nav-cmd-port")
+    nav.add_argument("--nav-slew-rate", type=float, default=20.0,
+                     help="deg/s: scan steps are smooth sim 'slew's at this rate, tracked throughout (0 = 'point' "
+                          "teleports). The dwell (--nav-scan s) starts on arrival")
     nav.add_argument("--nav-scan-max-rate", type=float, default=0.5,
                      help="deg/s: no scan step while the measured spin is faster (keeps the knob's tumble)")
     nav.add_argument("--nav-max-rate", type=float, default=2.0,
@@ -717,18 +787,36 @@ def main():
     nav_worker = None
     N_SCAN = 8
     button = a.nav and a.nav_scan > 0 and a.nav_scan_mode == "button"
-    sweep_left, scan_paused = 0, False         # button mode: pointings left in the current sweep
-    nav_in = None
-    if button:
+    sweep_left, scan_paused, scan_base = 0, False, 0   # button mode: pointings left in the sweep, its first one
+    slew_t0, slew_until = 0.0, 0.0             # our own scan slew in progress (until arrival or this deadline)
+    nav_in = None     # solver command port: 'whereami' (WHERE AM I?), 'detector <mode>' (--models)
+    follow = isinstance(src, FollowSource)
+    if button or len(solver.modes) > 1 or follow:
         nav_in = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         nav_in.bind(("127.0.0.1", a.nav_cmd_port))
         nav_in.setblocking(False)
-        print(f"[nav] scan on demand: 'whereami' on UDP {a.nav_cmd_port} (console WHERE AM I?)")
+        print(f"[cmd] solver commands on UDP {a.nav_cmd_port}: " + ", ".join(
+            (["'whereami'"] if button else []) + ([f"'detector {'|'.join(solver.modes)}'"] if len(solver.modes) > 1 else [])
+            + (["'camera clean|webcam'"] if follow else [])))
+    where_req = False
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0, "acq": []}
     shot, shot_lock = None, False
     perf = Perf()
     try:
         while not a.frames or stats["n"] < a.frames:
+            while nav_in is not None:   # commands (the model switch takes effect on this frame)
+                try:
+                    cmd = nav_in.recv(256).decode(errors="ignore").strip().lower().split()
+                except BlockingIOError:
+                    break
+                if cmd[:1] == ["whereami"]:
+                    where_req = True
+                elif cmd[:1] == ["detector"] and len(cmd) > 1:
+                    solver.set_mode(cmd[1])
+                elif cmd[:1] == ["camera"] and len(cmd) > 1 and follow and src.set_camera(cmd[1]):
+                    solver.set_webcam(src.camera_mode == "webcam")
+                    if navi is not None:
+                        navi.finder.H = src.H   # planet candidates: same camera -> screen mapping
             _p0 = time.perf_counter()
             t, gray, truth = src.read()
             _p1 = time.perf_counter()
@@ -761,8 +849,12 @@ def main():
                    "prob": float(res["Prob"]) if solved else None,
                    "rmse": float(res["RMSE"]) if solved else None, "solve_ms": round(ms, 1),
                    "n_centroids": len(c_scr), "centroids": np.round(c_scr[:100], 2).tolist(),
-                   "truth": truth, "err_arcsec": None, "roll_err_deg": None, "detector": a.detector,
-                   "detect_ms": round(getattr(solver, "detect_ms", 0.0), 1) if solver.starnet else None}
+                   "truth": truth, "err_arcsec": None, "roll_err_deg": None, "detector": solver.mode,
+                   "detectors": solver.modes, "good": solver.last_good,
+                   "camera": src.camera_mode if follow else None, "cameras": ["clean", "webcam"] if follow else None,
+                   "detect_ms": round(solver.detect_ms, 1) if solver.mode == "starnet" else None,
+                   # body rate measured from consecutive solves (deg/s, body frame x right, y down, z boresight)
+                   "omega_dps": np.round(np.degrees(solver.acq.w), 3).tolist() if status == "LOCK" else None}
             if solved:
                 msg.update(ra=float(res["RA"]), dec=float(res["Dec"]), roll=float(res["Roll"]),
                            fov=float(res["FOV"]))
@@ -777,36 +869,54 @@ def main():
                 if blind and a.nav_reset_on_blind and navi is not None and not was_blind:
                     navi.reset()
                     print("[nav] sensor blinded: forgetting sightings, searching for the position again")
+                    if button and sweep_left > 0:   # a sweep in progress starts over (its sightings are gone)
+                        sweep_left, scan_base, slew_until = N_SCAN, scan_i, 0.0
                 was_blind = blind
-                while nav_in is not None:
-                    try:
-                        cmd = nav_in.recv(256).decode(errors="ignore").strip().lower()
-                    except BlockingIOError:
-                        break
-                    if cmd == "whereami" and sweep_left == 0:
+                if where_req:
+                    where_req = False
+                    if button and sweep_left == 0:
                         if navi is not None:
                             navi.reset()
-                        sweep_left, scan_i, scan_t = N_SCAN, 0, 0.0
-                        print(f"[nav] WHERE AM I?: sweeping {N_SCAN} pointings along the ecliptic")
-                # a scan step teleports the sim ('point' also stops its tumble), so only take one while
-                # locked (no scanning while lost) and not spinning (the knob's tumble stays)
+                        # start at the scan pointing nearest to where we already look: short first turn
+                        i0 = 0
+                        if solved:
+                            from camera.navigate import ecliptic_scan_radec
+                            from sim.sky import unit
+                            here = unit(msg["ra"], msg["dec"])
+                            i0 = int(np.argmax([unit(*ecliptic_scan_radec(i)[:2]) @ here for i in range(N_SCAN)]))
+                        sweep_left, scan_i, scan_base, scan_t = N_SCAN, i0, i0, 0.0
+                        print(f"[nav] WHERE AM I?: sweeping {N_SCAN} pointings along the ecliptic, from #{i0}")
+                # a scan step turns the craft: a smooth 'slew' at --nav-slew-rate (tracked all the way), or with
+                # --nav-slew-rate 0 a 'point' teleport. Either stops the sim's tumble, so steps are only taken
+                # while locked (no scanning while lost) and not spinning (the knob's tumble stays).
+                now_s = time.time()
                 spin = math.degrees(np.linalg.norm(solver.acq.w))
-                want = a.nav_scan > 0 and (not button or sweep_left > 0)
-                wait = None if not want else "lock" if status != "LOCK" else "spin" if spin > a.nav_scan_max_rate else None
+                if slew_until and (now_s > slew_until or (now_s - slew_t0 > 0.6 and spin <= a.nav_scan_max_rate)):
+                    slew_until, scan_t = 0.0, now_s      # arrived (or gave up waiting): the dwell starts now
+                want = a.nav_scan > 0 and (not button or sweep_left > 0 or slew_until)
+                wait = (None if not want else "slew" if slew_until else "lock" if status != "LOCK"
+                        else "spin" if spin > a.nav_scan_max_rate else None)
                 paused = wait == "spin"
                 if paused != scan_paused:
                     scan_paused = paused
                     print(f"[nav] scan paused: spinning {spin:.1f} deg/s" if paused else "[nav] scan resumed")
-                if want and wait is None and time.time() - scan_t > a.nav_scan:
-                    solver.acq.expect_jump(t)
+                if want and wait is None and (not button or sweep_left > 0) and now_s - scan_t > a.nav_scan:
                     from camera.navigate import ecliptic_scan_radec
                     ra_, dec_, roll_ = ecliptic_scan_radec(scan_i)
-                    out.sendto(f"point {ra_:.4f} {dec_:.4f} {roll_:.3f}".encode(), ("127.0.0.1", a.cmd_port))
-                    scan_i, scan_t = scan_i + 1, time.time()
+                    if a.nav_slew_rate > 0:
+                        turn = Acquisition.angle_deg(from_radecroll(msg["ra"], msg["dec"], msg["roll"]),
+                                                     from_radecroll(ra_, dec_, roll_)) if solved else 90.0
+                        out.sendto(f"slew {ra_:.4f} {dec_:.4f} {roll_:.3f} {a.nav_slew_rate:g}".encode(),
+                                   ("127.0.0.1", a.cmd_port))
+                        slew_t0, slew_until = now_s, now_s + 1.5 * turn / a.nav_slew_rate + 2.0
+                    else:
+                        solver.acq.expect_jump(t)
+                        out.sendto(f"point {ra_:.4f} {dec_:.4f} {roll_:.3f}".encode(), ("127.0.0.1", a.cmd_port))
+                    scan_i, scan_t = scan_i + 1, now_s
                     if button:
                         sweep_left -= 1
-                # the last pointing still needs its dwell before the sweep counts as done
-                active = button and (sweep_left > 0 or (scan_i > 0 and time.time() - scan_t < a.nav_scan))
+                # the last pointing still needs its slew and dwell before the sweep counts as done
+                active = button and (sweep_left > 0 or bool(slew_until) or (scan_i > 0 and now_s - scan_t < a.nav_scan))
                 if status == "LOCK":
                     if navi is None:
                         from camera.navigate import CandidateFinder, LiveNavigator
@@ -826,9 +936,17 @@ def main():
                             and nav_worker.submit(navi, gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)):
                         nav_t = time.time()
                 msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
+                if navi is not None and status == "LOCK":   # identified planets in this frame, from the estimates
+                    try:
+                        msg["planets_px"] = navi.planets_in_view(from_radecroll(msg["ra"], msg["dec"], msg["roll"]))
+                    except Exception as e:   # display only: never let it stop the solver
+                        msg["planets_px"] = []
+                        if not getattr(navi, "_piv_warned", False):
+                            navi._piv_warned = True
+                            print("[nav] planets_in_view:", repr(e))
                 if a.nav_scan > 0:
                     msg["nav"]["scan"] = {"mode": a.nav_scan_mode, "active": bool(active) if button else True,
-                                          "step": min(scan_i, N_SCAN) if button else scan_i % N_SCAN,
+                                          "step": min(scan_i - scan_base, N_SCAN) if button else scan_i % N_SCAN,
                                           "n": N_SCAN, "paused": scan_paused, "wait": wait}
                 nv = msg["nav"]
                 if time.time() - nav_print > 5:
@@ -863,7 +981,7 @@ def main():
                     + (f"RA {msg['ra']:7.2f} Dec {msg['dec']:6.2f} Roll {msg['roll']:6.1f} "
                        f"Prob {msg['prob']:.0e} RMSE {msg['rmse']:5.0f}\"" if solved else "no solution".ljust(62))
                     + f" | {ms:4.0f} ms"
-                    + (f" (+StarNet {solver.detect_ms:4.0f} ms)" if solver.starnet else "")
+                    + (f" (+StarNet {solver.detect_ms:4.0f} ms)" if solver.mode == "starnet" else "")
                     + (f" | err {msg['err_arcsec']:6.0f}\" roll {msg['roll_err_deg']:+.2f} deg"
                        if msg["err_arcsec"] is not None else ""))
             if not a.quiet or stats["n"] % 10 == 1:

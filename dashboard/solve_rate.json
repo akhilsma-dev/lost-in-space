@@ -1,0 +1,9 @@
+{
+  "title": "benchmark · correct solves at 20°/s tumble",
+  "note": "ml/out/benchmark.md (clean render, 200 frames) and ml/out/benchmark_simcam.md (through the synthetic webcam, 100 frames). StarNet was trained on our renderer: on Stellarium frames it solves 38%.",
+  "rows": [
+    {"label": "CLASSIC tetra3 · render", "model": "classic", "rate": 0.115, "n": 200},
+    {"label": "TUNED tetra3 · webcam", "model": "tuned", "rate": 0.51, "n": 100},
+    {"label": "StarNet CNN · webcam", "model": "starnet", "rate": 0.97, "n": 100}
+  ]
+}

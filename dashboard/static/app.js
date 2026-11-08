@@ -4,7 +4,7 @@
 const $ = (id) => document.getElementById(id);
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const C = { lock: css("--lock"), lost: css("--lost"), search: css("--search"), con: css("--con"),
-            cent: css("--cent"), truth: css("--truth"), dim: css("--dim"), edge: css("--edge"), nosig: css("--nosig") };
+            cent: css("--cent"), planet: css("--planet"), truth: css("--truth"), dim: css("--dim"), edge: css("--edge"), nosig: css("--nosig") };
 
 let S = null;          // latest snapshot
 let lastMsg = 0;       // wall time we last heard from the server
@@ -111,33 +111,73 @@ function updateText() {
   $("sess").textContent = st.session_n ? `${st.session_lock}/${st.session_n} locked` : "—";
 
   updateSolveRate();
+  updateCamSwitch();
   updateNavText();
 }
 
-function updateSolveRate() {
-  const sr = S.solve_rate, st = S.stats;
-  let rows, title, note;
-  if (sr && Array.isArray(sr.rows)) {
-    rows = sr.rows.map((r, i) => ({ label: r.label, rate: r.rate, n: r.n, col: i === sr.rows.length - 1 ? C.lock : C.search }));
-    title = sr.title || "tetra3 alone vs tetra3 + CNN";
-    note = sr.note || "";
-  } else {
-    rows = [
-      { label: "LIVE (30 s)", rate: st.lock30, n: st.n30, col: C.con },
-      { label: "tetra3 alone", rate: null, col: C.search },
-      { label: "tetra3 + CNN", rate: null, col: C.lock },
-    ];
-    title = "tetra3 alone vs tetra3 + CNN";
-    note = "Benchmark pending — drop results in dashboard/solve_rate.json";
+// SOLVE RATE: the star-finder switch (solve_live --models), live per star finder the share of the last 30 s
+// spent in LOCK, and the benchmark rows (correct solves per frame) from dashboard/solve_rate.json.
+const MODEL = { classic: { name: "CLASSIC tetra3", col: "#9aa4b8" }, tuned: { name: "TUNED tetra3", col: "#ffb83c" },
+                starnet: { name: "StarNet CNN", col: "#3ce67a" } };
+let srPending = null;   // model asked for, until the solver reports it
+function setModel(m) {
+  srPending = { m, t: performance.now() };
+  fetch("/cmd", { method: "POST", body: JSON.stringify({ detector: m }) }).catch(() => {});
+  updateSolveRate();
+}
+// CLEAN / WEBCAM: what the solver films (solve_live --follow-sim): the screen pixels as they are, or the
+// screen through the synthetic webcam (keystone, defocus, noise, JPEG) like the real box
+let camPending = null;
+function setCamera(m) {
+  camPending = { m, t: performance.now() };
+  fetch("/cmd", { method: "POST", body: JSON.stringify({ camera: m }) }).catch(() => {});
+  updateCamSwitch();
+}
+function updateCamSwitch() {
+  const e = (S && S.est) || {}, cams = Array.isArray(e.cameras) ? e.cameras : [], cur = e.camera, sw = $("camSwitch");
+  if (camPending && (cur === camPending.m || performance.now() - camPending.t > 5000)) camPending = null;
+  sw.hidden = cams.length < 2;
+  if (cams.length < 2) return;
+  const html = cams.map((c) => `<button data-m="${c}" class="${c === cur ? "on" : ""}${camPending && camPending.m === c ? " wait" : ""}" ` +
+    `title="${c === "webcam" ? "solve through the synthetic webcam, like the real box" : "solve on the clean screen pixels"}">${c.toUpperCase()}</button>`).join("");
+  if (sw.dataset.html !== html) {
+    sw.dataset.html = html; sw.innerHTML = html;
+    sw.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setCamera(b.dataset.m)));
   }
-  $("srTitle").textContent = title;
+}
+
+function updateSolveRate() {
+  const sr = S.solve_rate, st = S.stats, e = S.est || {};
+  const dets = Array.isArray(e.detectors) ? e.detectors : [], cur = e.detector;
+  if (srPending && (cur === srPending.m || performance.now() - srPending.t > 4000)) srPending = null;
+  // switch
+  const sw = $("srSwitch");
+  sw.hidden = dets.length < 2;
+  if (dets.length > 1) {
+    const html = dets.map((d) => `<button data-m="${d}" class="${d === cur ? "on" : ""}${srPending && srPending.m === d ? " wait" : ""}"` +
+      ` style="--c:${(MODEL[d] || {}).col || C.dim}">${(MODEL[d] || { name: d }).name}</button>`).join("");
+    if (sw.dataset.html !== html) {
+      sw.dataset.html = html; sw.innerHTML = html;
+      sw.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setModel(b.dataset.m)));
+    }
+  }
+  // live rows: one per star finder used in the last 30 s, the active one first
+  const models = (st && st.models) || {};
+  const live = Object.entries(models).sort((a, b) => (b[0] === cur) - (a[0] === cur)).map(([d, [r, n]]) =>
+    ({ label: `LOCK HELD · ${(MODEL[d] || { name: d }).name}${d === cur ? "" : " (earlier)"}`, rate: r, n, col: (MODEL[d] || {}).col || C.con }));
+  if (!live.length) live.push({ label: "LIVE (30 s)", rate: st.lock30, n: st.n30, col: C.con });
+  let rows = live, title = "live, last 30 s", note = "";
+  if (sr && Array.isArray(sr.rows)) {
+    rows = live.concat([{ head: sr.title || "benchmark" }],
+      sr.rows.map((r) => ({ label: r.label, rate: r.rate, n: r.n, col: (MODEL[r.model] || {}).col || C.search })));
+    note = sr.note || "";
+  } else note = "Benchmark not loaded: dashboard/solve_rate.json";
+  $("srTitle").textContent = dets.length > 1 ? "choose the star finder" : title;
   $("srNote").textContent = note;
-  const html = rows.map((r) => {
-    const pend = r.rate == null;
-    return `<div class="srrow${pend ? " pending" : ""}"><span>${r.label}</span>` +
-      `<div class="bar"><div style="width:${pend ? 0 : (r.rate * 100).toFixed(1)}%;background:${r.col}"></div></div>` +
-      `<span class="num">${pend ? "pending" : (r.rate * 100).toFixed(0) + "%"}</span></div>`;
-  }).join("");
+  const html = rows.map((r) => r.head ? `<div class="srhead">${r.head}</div>` :
+    `<div class="srrow${r.rate == null ? " pending" : ""}"><span>${r.label}</span>` +
+    `<div class="bar"><div style="width:${r.rate == null ? 0 : (r.rate * 100).toFixed(1)}%;background:${r.col}"></div></div>` +
+    `<span class="num">${r.rate == null ? "—" : (r.rate * 100).toFixed(0) + "%"}</span></div>`).join("");
   if ($("srRows").innerHTML !== html) $("srRows").innerHTML = html;
 }
 
@@ -190,6 +230,18 @@ function drawSky(ctx, bx, by, bw, bh, img, v, o, bore, alpha = 0.9, filter = "no
       ctx.fillStyle = "#d6ffe4"; ctx.fillText(name, X(x) + 17, Y(y) - 6);
     }
   }
+  if (o && o.planets && o.planets.length) {   // planets the navigator identified, where the estimates put them
+    ctx.strokeStyle = C.planet; ctx.lineWidth = 2;
+    ctx.font = "700 14px -apple-system, Helvetica, Arial"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    for (const [x, y, name] of o.planets) {
+      ctx.beginPath(); ctx.arc(X(x), Y(y), 14, 0, 2 * Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X(x) - 20, Y(y)); ctx.lineTo(X(x) - 16, Y(y)); ctx.moveTo(X(x) + 16, Y(y)); ctx.lineTo(X(x) + 20, Y(y));
+      ctx.moveTo(X(x), Y(y) - 20); ctx.lineTo(X(x), Y(y) - 16); ctx.moveTo(X(x), Y(y) + 16); ctx.lineTo(X(x), Y(y) + 20); ctx.stroke();
+      const label = name.toUpperCase(), tw = ctx.measureText(label).width;
+      ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(X(x) + 22, Y(y) - 10, tw + 8, 20);
+      ctx.fillStyle = C.planet; ctx.fillText(label, X(x) + 26, Y(y));
+    }
+  }
   if (bore) {   // boresight reticle
     ctx.strokeStyle = "rgba(60,230,122,.55)"; ctx.lineWidth = 1;
     const cx = X(bore[0]), cy = Y(bore[1]);
@@ -210,7 +262,9 @@ function drawView() {
   if (cam) {
     // main: the frame the solver saw, overlay from the estimate solved on that same frame
     $("viewTitle").textContent = "CAMERA VIEW";
-    $("viewNote").textContent = "what the solver sees · overlay from the ESTIMATED attitude";
+    $("viewNote").textContent = S.est && S.est.camera === "webcam"
+      ? "what the solver sees · through the synthetic webcam · overlay from the ESTIMATED attitude"
+      : "what the solver sees · overlay from the ESTIMATED attitude";
     const o = cam.overlay;
     r = drawSky(ctx, 0, 0, W, H, camFrame.img, cam, o, o && o.bore, 1);
     // inset: the real sky on the box screen (hidden truth), no overlay
@@ -230,6 +284,7 @@ function drawView() {
     r = drawSky(ctx, 0, 0, W, H, v.has_frame ? frame.img : null, v, v.overlay, v.overlay && [v.w / 2, v.h / 2]);
   }
   const { ox, oy } = r;
+  if (cam || v.has_frame) drawCraftInset(ctx, r);
 
   // status overlays
   const stale = performance.now() - lastMsg > 2500;
@@ -281,8 +336,13 @@ const BODY = (() => {
 function drawAtt3d(t) {
   const [ctx, W, H] = fit($("att3d"));
   ctx.clearRect(0, 0, W, H);
-  const R = Math.min(W, H) * 0.42, cx = W / 2, cy = H / 2 + 4;
-  const az = t * 0.00008, el = 0.38;   // slow orbit of the viewpoint
+  drawCraftScene(ctx, W / 2, H / 2 + 4, Math.min(W, H) * 0.42, t * 0.00008, { labels: true, note: [8, H - 10] });   // slow orbit
+}
+
+// The spacecraft (estimate solid, hidden truth dashed) inside the celestial sphere, orthographic, viewed from
+// azimuth az. Used by the 3D panel and by the small SPACECRAFT inset on the camera view.
+function drawCraftScene(ctx, cx, cy, R, az, opts = {}) {
+  const el = 0.38;
   const ca = Math.cos(az), sa = Math.sin(az), ce = Math.cos(el), se = Math.sin(el);
   const P = (v) => {   // inertial -> screen (orthographic), returns [x, y, depth]
     const x = ca * v[0] + sa * v[1], y = -sa * v[0] + ca * v[1], z = v[2];
@@ -304,9 +364,11 @@ function drawAtt3d(t) {
   ring((a) => [Math.cos(a), Math.sin(a), 0]);
   ring((a) => [Math.cos(a), 0, Math.sin(a)]);
   ring((a) => [0, Math.cos(a), Math.sin(a)]);
-  ctx.fillStyle = C.dim; ctx.font = "600 11px -apple-system, Helvetica, Arial"; ctx.textAlign = "center";
-  const np = P([0, 0, 1.08]); ctx.fillText("NCP", np[0], np[1]);
-  const vx = P([1.1, 0, 0]); ctx.fillText("♈︎ RA 0°", vx[0], vx[1]);
+  if (opts.labels) {
+    ctx.fillStyle = C.dim; ctx.font = "600 11px -apple-system, Helvetica, Arial"; ctx.textAlign = "center";
+    const np = P([0, 0, 1.08]); ctx.fillText("NCP", np[0], np[1]);
+    const vx = P([1.1, 0, 0]); ctx.fillText("♈︎ RA 0°", vx[0], vx[1]);
+  }
 
   const drawCraft = (M, style) => {
     const S3 = 0.62;
@@ -331,9 +393,41 @@ function drawAtt3d(t) {
   const a = S.att;
   if (a.truth) drawCraft(a.truth, { bus: C.truth, panel: C.truth, bore: C.truth, up: C.truth, lw: 1, dash: [4, 4], alpha: 0.55, dot: 9, fillDot: false });
   if (a.est) drawCraft(a.est, { bus: C.lock, panel: "#5aa8ff", bore: C.lock, up: "rgba(60,230,122,.5)", lw: 1.6, dash: [], alpha: 1, dot: 4.5, fillDot: true });
-  if (!a.truth && !a.est) bigText(ctx, W, H, "NO ATTITUDE", "", C.nosig, 22);
+  // spin axis (inset): the axis the craft is turning about, measured from the solves; it swings round with
+  // the tumble's wobble. Both ends, since a spin axis has no preferred end on screen.
+  const w = opts.spin && a.est && S.est && S.est.omega_dps;
+  const wn = w ? Math.hypot(w[0], w[1], w[2]) : 0;
+  if (wn > 0.5) {
+    const M = a.est, u = [0, 1, 2].map((i) => (M[i][0] * w[0] + M[i][1] * w[1] + M[i][2] * w[2]) / wn);
+    const p0 = P(u.map((v) => -v * 1.05)), p1 = P(u.map((v) => v * 1.05));
+    ctx.strokeStyle = C.search; ctx.lineWidth = 2; ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = C.search; ctx.beginPath(); ctx.arc(p1[0], p1[1], 3.5, 0, 2 * Math.PI); ctx.fill();
+  }
+  if (!opts.note) return;
+  if (!a.truth && !a.est) { ctx.fillStyle = C.nosig; ctx.font = "800 18px -apple-system, Helvetica, Arial"; ctx.textAlign = "center"; ctx.fillText("NO ATTITUDE", cx, cy); }
   else if (!a.est) { ctx.fillStyle = S.state === "LOST" ? C.lost : C.search; ctx.font = "700 13px -apple-system, Helvetica, Arial";
-    ctx.textAlign = "left"; ctx.fillText("no estimate — " + S.state.toLowerCase(), 8, H - 10); }
+    ctx.textAlign = "left"; ctx.fillText("no estimate — " + S.state.toLowerCase(), opts.note[0], opts.note[1]); }
+}
+
+// Small SPACECRAFT inset in the camera view's bottom-left: how the craft is turning (tumble, detumble,
+// WHERE AM I? scan). Fixed viewpoint, so all motion is the spacecraft's own. Solid = what the tracker
+// believes (only while locked), dashed = the hidden truth.
+function drawCraftInset(ctx, r) {
+  if (!S || !S.att || (!S.att.truth && !S.att.est)) return;
+  const sz = Math.round(Math.max(140, Math.min(r.dw, r.dh) * 0.34)), x = r.ox + 10, y = r.oy + r.dh - sz - 30;
+  ctx.fillStyle = "rgba(4,7,13,.94)"; ctx.fillRect(x - 3, y - 3, sz + 6, sz + 28);
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, sz, sz); ctx.clip();
+  drawCraftScene(ctx, x + sz / 2, y + sz / 2, sz * 0.44, 0.65, { spin: true });
+  ctx.restore();
+  ctx.strokeStyle = C.edge; ctx.lineWidth = 1; ctx.strokeRect(x - 0.5, y - 0.5, sz + 1, sz + 1);
+  const tr = S.truth, rate = tr && tr.rate_dps;
+  ctx.font = "700 11px -apple-system, Helvetica, Arial"; ctx.textBaseline = "top";
+  ctx.textAlign = "left"; ctx.fillStyle = S.att.est ? C.lock : S.state === "LOST" ? C.lost : C.search;
+  ctx.fillText(S.att.est ? "SPACECRAFT" : S.state === "LOST" ? "SPACECRAFT · LOST" : "SPACECRAFT · SEARCHING", x + 2, y + sz + 6);
+  if (tr && tr.slewing) { ctx.textAlign = "right"; ctx.fillStyle = C.con; ctx.fillText("SLEWING", x + sz - 2, y + sz + 6); }
+  else if (rate != null) { ctx.textAlign = "right"; ctx.fillStyle = rate > 0.05 ? C.search : C.dim; ctx.fillText(`${rate.toFixed(1)}°/s`, x + sz - 2, y + sz + 6); }
+  ctx.textBaseline = "alphabetic";
 }
 
 // ---------------------------------------------------------------- history chart

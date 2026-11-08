@@ -131,6 +131,25 @@ whole screen. Screen pixel = 94" at 50 deg / 1920 px.
 
 Blob finding (~60 ms on a 1080p frame) dominates the frame time, not tetra3.
 
+### Star finders: switch live, film through the synthetic webcam
+
+`--models` loads all three star finders and switches between them live (`detector classic|tuned|starnet` on
+`--nav-cmd-port`, the dashboard's SOLVE RATE panel): **classic** = tetra3's blob finder as shipped (max area
+100 px), **tuned** = streaks kept (`--max-area`, 5000), **starnet** = our CNN on the frame warped to screen px.
+Each estimate carries `detector`, `detectors` and `good` (this frame alone solved trustworthily).
+`--sim-camera` now also works with `--follow-sim`: each sim frame is filmed by `camera.fakecam` (keystone,
+defocus, vignetting, noise, JPEG; ~50 ms) and the camera→screen homography is auto-fitted on its checkerboard,
+so the live demo sees what the box's webcam would (`fake_demo.sh --webcam`; ~8-10 solves/s). With `--follow-sim`
+it is also switchable live: `camera clean|webcam` on the command port (the dashboard's CLEAN / WEBCAM switch in
+the camera view's header); the star finder background follows (fast for clean, tetra3's local filter for the
+webcam), and a lock survives the switch. Estimates carry `camera` and `cameras`.
+
+Measured live at 20 deg/s through the webcam (25 s per model, 2026-11-08): with tetra3 (classic or tuned) the
+lock broke within seconds and recovery detumbled the craft; StarNet held LOCK for the full 25 s in one run and lost
+it in sparse sky in another (25-42 stars found, confidence 0.3-0.6). StarNet's benchmark is 97% correct frames,
+and one bad frame ends a LOCK, so at ~10 frames/s it cannot hold lock for long at 20 deg/s either: coasting
+through single-frame dropouts would make the difference show reliably (see TODO).
+
 ### Frame rate (`--follow-sim`, 2026-11-08)
 
 `solve_live` prints a `[perf]` line every 5 s: solves/s and ms per frame for read (and render), solve, nav, send.
@@ -294,6 +313,12 @@ demo/fake_demo.sh --nav        # everything, no camera; dashboard POSITION panel
     A full scan takes 24 s. Steps are only taken while LOCKed and while the spin measured from the solves
     is below `--nav-scan-max-rate` (0.5 deg/s): `point` stops the sim's tumble, so scanning while the console
     knob spins the craft used to cancel the knob within 3 s.
+  - Scan steps are smooth `slew`s (sim.live command: turn to an attitude at a set rate, then hold) at
+    `--nav-slew-rate` (20 deg/s), tracked all the way; the `--nav-scan` dwell (2 s in `fake_demo.sh --nav`)
+    starts on arrival. A sweep starts at the scan pointing nearest the current view; a full sweep takes about
+    35-40 s. `--nav-slew-rate 0` uses `point` teleports instead. A flare during a sweep restarts it.
+  - Each locked frame with a fix carries `planets_px`: `[[x, y, name], ...]`, screen px where the fix's bodies
+    should be, from the estimated position (light time included) and attitude. The dashboard marks them.
   - `--nav-scan-mode button` (what `fake_demo.sh --nav` uses with the virtual console): no automatic scan.
     WHERE AM I? on the console sends `whereami` (bridge → UDP 5011, `--nav-cmd-port`); the solver forgets
     old sightings and runs one 8-pointing sweep. Sightings are kept until the next press (or a flare with

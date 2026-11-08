@@ -20,13 +20,14 @@
 
 <main id="grid">
   <section id="viewPanel" class="panel">
-    <div class="ptitle"><span id="viewTitle">CAMERA VIEW</span><span id="viewNote" class="dim">screen in the box · overlay from the ESTIMATED attitude</span></div>
+    <div class="ptitle"><span id="viewTitle">CAMERA VIEW</span><span id="camSwitch" class="camswitch" hidden></span><span id="viewNote" class="dim">screen in the box · overlay from the ESTIMATED attitude</span></div>
     <canvas id="view"></canvas>
     <div id="caption" aria-live="polite"></div>
     <div class="legend">
       <span><i style="background:var(--cent)"></i>detected blob</span>
       <span><i style="background:var(--lock)"></i>identified star</span>
       <span><i style="background:var(--con)"></i>constellation (from estimate)</span>
+      <span><i style="background:var(--planet)"></i>identified planet</span>
     </div>
   </section>
 
@@ -99,6 +100,7 @@
 
   <section id="ratePanel" class="panel">
     <div class="ptitle"><span>SOLVE RATE</span><span id="srTitle" class="dim">tetra3 alone vs tetra3 + CNN</span></div>
+    <div id="srSwitch" class="srswitch" hidden></div>
     <div id="srRows"></div>
     <div id="srNote" class="dim small"></div>
   </section>
