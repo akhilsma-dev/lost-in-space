@@ -33,11 +33,13 @@ const uint32_t LINK_TIMEOUT_MS = 3000;   // no laptop line for this long -> "NO 
 const uint16_t OLED_MIN_MS = 200;        // redraw at most 5x/s
 
 // ---------------------------------------------------------------- OLED
-// The kit's SSD1315 works with the SSD1306 driver; hardware I2C pins used as SW I2C.
+// The kit's SSD1315 works with the SSD1306 driver, on the hardware I2C bus (A4/A5).
 // U8x8 (text-only, 16x8 character cells) writes straight to the display with no frame
 // buffer. The U8g2 full-buffer mode needed 1 KB of the Uno's 2 KB RAM, which left ~45
 // bytes of stack and corrupted the display.
-U8X8_SSD1306_128X64_NONAME_SW_I2C u8x8(/* clock=*/SCL, /* data=*/SDA, /* reset=*/U8X8_PIN_NONE);
+// Hardware I2C at 400 kHz, not software I2C: SW I2C took tens of ms per text row, long
+// enough for the 64-byte serial RX buffer to overflow and garble the bridge's commands.
+U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(/* reset=*/U8X8_PIN_NONE);
 
 // ---------------------------------------------------------------- state
 enum Status : uint8_t { ST_NOLINK, ST_SEARCH, ST_LOCK, ST_LOST };
@@ -214,7 +216,10 @@ const uint8_t COLS = 16, TEXT_ROW0 = 2, TEXT_ROWS = 6;
 char oledTitle[COLS / 2 + 1];                // 8 big chars, space padded (always full width)
 bool oledTitleInverse = false;
 char oledText[TEXT_ROWS][COLS + 1];          // rows 2..7, space padded
-int8_t oledRow = -1;   // next row to send, -1 = idle
+char shownTitle[COLS / 2 + 1];               // what is on the glass now: only changed rows are sent
+bool shownTitleInverse = false;
+char shownText[TEXT_ROWS][COLS + 1];
+int8_t oledRow = -1;   // next row to check/send, -1 = idle
 uint32_t lastDrawMs = 0;
 
 // Copy s into a space-padded fixed-width row (clears leftovers from the previous frame).
@@ -247,17 +252,27 @@ void render(uint32_t now) {
 }
 
 void updateOled(uint32_t now) {
-  if (oledRow >= 0) {
+  // At most one changed row goes out per loop() pass; unchanged rows are skipped.
+  while (oledRow >= 0) {
     if (oledRow < TEXT_ROW0) {
-      u8x8.setInverseFont(oledTitleInverse);
-      u8x8.draw2x2String(0, 0, oledTitle);
-      u8x8.setInverseFont(0);
       oledRow = TEXT_ROW0;
+      if (oledTitleInverse != shownTitleInverse || strcmp(oledTitle, shownTitle)) {
+        u8x8.setInverseFont(oledTitleInverse);
+        u8x8.draw2x2String(0, 0, oledTitle);
+        u8x8.setInverseFont(0);
+        strcpy(shownTitle, oledTitle);
+        shownTitleInverse = oledTitleInverse;
+        return;
+      }
     } else {
-      u8x8.drawString(0, oledRow, oledText[oledRow - TEXT_ROW0]);
+      uint8_t i = oledRow - TEXT_ROW0;
       if (++oledRow >= TEXT_ROW0 + TEXT_ROWS) oledRow = -1;
+      if (strcmp(oledText[i], shownText[i])) {
+        u8x8.drawString(0, TEXT_ROW0 + i, oledText[i]);
+        strcpy(shownText[i], oledText[i]);
+        return;
+      }
     }
-    return;
   }
   bool flareExpired = flareShownMs && now - flareShownMs >= 1000;
   if (flareExpired) { flareShownMs = 0; displayDirty = true; }
@@ -277,6 +292,7 @@ void setup() {
   pinMode(PIN_BUZZ, OUTPUT);
   digitalWrite(PIN_LED, LOW);
 
+  u8x8.setBusClock(400000);
   u8x8.begin();
   u8x8.setFont(u8x8_font_chroma48medium8_r);
   u8x8.clearDisplay();
