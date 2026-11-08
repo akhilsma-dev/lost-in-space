@@ -30,6 +30,8 @@ python -m voice.generate               # ElevenLabs, about 30 short clips
 | lock back after an outage | "Lock reacquired in N seconds." (1–10 s, else "Lock reacquired.") |
 | lock lost | "Star tracker has lost lock." (not right after a flare) |
 | still lost after 3 s | "Searching the sky." (at most every 15 s) |
+| solver starts a search slew (stage `SEARCH SLEW`) | "Searching the sky." (the slew's rate burst is not read out) |
+| detumble maneuver brings the rate to 0 | "Spacecraft stabilized." (the rate rule) |
 | flare whiteout starts | "Solar flare! Sensor blinded." (interrupts other lines) |
 | knob rests in a new 5 °/s band | "Tumble rate N degrees per second." / "Spacecraft stabilized." |
 | 3 s into a lock | "Pointing error under N arc seconds." (at most every 30 s) |

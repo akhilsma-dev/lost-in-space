@@ -2,11 +2,13 @@
 
   board  BTN FLARE        ->  UDP "flare"            -> sim/live.py (127.0.0.1:5006)
   board  KNOB <0-1023>    ->  UDP "rate <0..20>"     -> sim/live.py (only on meaningful change)
-  solver JSON on UDP 5007 ->  STATUS / ATT / SERVO   -> board (throttled to 10 Hz)
+  solver JSON on UDP 5007 ->  STATUS / STAGE / ATT / SERVO -> board (throttled to 10 Hz)
 
 Solver JSON (one object per datagram or per line):
   {"status": "LOCK"|"SEARCH"|"LOST", "ra": deg, "dec": deg, "roll": deg}
-optional "pan"/"tilt" (deg) override the servo mapping.
+optional "pan"/"tilt" (deg) override the servo mapping; optional "stage" (e.g. "VERIFYING 3/6",
+"DETUMBLING 12.0") goes to the board as "STAGE <text>". The virtual console shows it; the real
+firmware does not know STAGE yet, so it is only sent to a real board with --stage-lines.
 
 Servo mapping (--servo-mode):
   relative (default)  on entering LOCK the model centres (90, 90) and remembers that pointing;
@@ -218,6 +220,7 @@ class Bridge:
         self.solver_new = False
         self.sent_status = None
         self.sent_status_t = 0.0
+        self.sent_stage = None
         self.servo_ref = None       # (ra, dec) the model was centred on
         self.ref_status = None      # last solver status seen by servo_target
         self.flare_t = -1e9
@@ -280,6 +283,10 @@ class Bridge:
         if st and (st != self.sent_status or now - self.sent_status_t >= KEEPALIVE_S):
             self.board.write(f"STATUS {st}")
             self.sent_status, self.sent_status_t = st, now
+        stage = self.stage_line(d.get("stage"))
+        if stage and self.args.stage_lines and stage != self.sent_stage:
+            self.board.write(stage)
+            self.sent_stage = stage
         if not new:
             return
         try:
@@ -292,6 +299,14 @@ class Bridge:
         servo = self.servo_target(st, ra, dec, d)
         if servo:
             self.board.write(f"SERVO {servo[0]:.1f} {servo[1]:.1f}")
+
+    @staticmethod
+    def stage_line(stage):
+        """'STAGE <text>' for the board: printable ASCII, upper case, fits the 63-char line limit."""
+        if not stage:
+            return None
+        text = "".join(c for c in str(stage).upper() if 32 <= ord(c) < 127).strip()[:40]
+        return f"STAGE {text}" if text else None
 
     def servo_target(self, st, ra, dec, d):
         if "pan" in d and "tilt" in d:
@@ -374,9 +389,14 @@ def main():
     ap.add_argument("--truth-demo", action="store_true",
                     help="testing only: listen to sim truth on UDP 5005 and treat it as a LOCKed solver "
                          "(conflicts with anything else bound to 5005, e.g. the dashboard)")
+    ap.add_argument("--stage-lines", action=argparse.BooleanOptionalAction, default=None,
+                    help="send 'STAGE <text>' lines (acquisition stage) to the board. Default: on for --fake / "
+                         "--web, off for a real board (its firmware answers 'ERR unknown STAGE')")
     ap.add_argument("--verbose", action="store_true", help="fake mode: print every line sent to the board")
     args = ap.parse_args()
 
+    if args.stage_lines is None:
+        args.stage_lines = args.fake
     rx = queue.Queue()
     if args.web is not None and not args.fake:
         ap.error("--web needs --fake (the virtual console replaces the board)")

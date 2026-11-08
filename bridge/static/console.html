@@ -161,13 +161,13 @@ const CLICK = [[3000, 15]];
 const $ = (id) => document.getElementById(id);
 if (new URLSearchParams(location.search).has("embed")) document.body.classList.add("embed");
 
-const st = { status: "NO LINK", ra: 0, dec: 0, roll: 0, haveAtt: false, lastRx: 0, flareAt: 0,
+const st = { status: "NO LINK", stage: "", ra: 0, dec: 0, roll: 0, haveAtt: false, lastRx: 0, flareAt: 0,
              knob: 0, knobSent: 0, knobSentAt: 0, dragging: false,
              pan: 90, tilt: 90, panT: 90, tiltT: 90, bridge: false };
 
 // ---------------------------------------------------------------- serial monitor
 // latest line of each kind, in a fixed order, so 10 Hz ATT/SERVO don't scroll the presses away
-const LOG_ORDER = ["STATUS", "ATT", "SERVO", "BTN", "KNOB"], logLast = {};
+const LOG_ORDER = ["STATUS", "STAGE", "ATT", "SERVO", "BTN", "KNOB"], logLast = {};
 let logDirty = false;
 function logLine(dir, text) {
   const kind = text.split(" ")[0];
@@ -234,6 +234,7 @@ function onLaptopLine(line) {
   const p = line.trim().split(/\s+/);
   st.lastRx = performance.now();
   if (p[0] === "STATUS" && ["LOCK", "LOST", "SEARCH"].includes(p[1])) setStatus(p[1]);
+  else if (p[0] === "STAGE") st.stage = p.slice(1).join(" ");   // acquisition stage (bridge >= STAGE support)
   else if (p[0] === "ATT" && p.length >= 4) { [st.ra, st.dec, st.roll] = p.slice(1, 4).map(Number); st.haveAtt = true; }
   else if (p[0] === "SERVO" && p.length >= 3) {
     st.panT = Math.min(PAN[1], Math.max(PAN[0], +p[1]));
@@ -363,7 +364,21 @@ function drawOled(now) {
   oc.textAlign = "center"; oc.fillText(title, 64, 16);
   if (st.status === "LOCK") { oc.lineWidth = 1; oc.strokeRect(0.5, 0.5, 127, 19); }
   oc.textAlign = "left"; oc.font = "10px Menlo, 'DejaVu Sans Mono', monospace";
-  if (st.haveAtt) {
+  const showStage = st.stage && st.status !== "LOCK" && st.status !== "NO LINK" && st.stage !== st.status;
+  if (showStage) {
+    // what the tracker is doing while not locked, with a bar for the stages that have progress
+    const m = st.stage.match(/^VERIFYING (\d+)\/(\d+)/), d = st.stage.match(/^DETUMBLING ([\d.]+)/);
+    oc.textAlign = "center"; oc.fillText(st.stage, 64, 33); oc.textAlign = "left";
+    const frac = m ? +m[1] / +m[2] : d ? Math.min(1, +d[1] / KNOB_MAX_RATE) : null;
+    if (frac != null) {
+      oc.lineWidth = 1; oc.strokeRect(8.5, 39.5, 111, 7);
+      oc.fillRect(10, 41, Math.round(108 * frac), 4);
+    } else if (/^SEARCH SLEW|^MATCHING|^DETECTING/.test(st.stage)) {   // indeterminate: a sweeping block
+      const x = 10 + Math.round(((now / 12) % 140)) - 20;
+      oc.lineWidth = 1; oc.strokeRect(8.5, 39.5, 111, 7);
+      oc.fillRect(Math.max(10, x), 41, Math.max(0, Math.min(118, x + 20) - Math.max(10, x)), 4);
+    }
+  } else if (st.haveAtt) {
     const row = (lab, v, y) => { oc.fillText(lab, 0, y); oc.fillText(fmt(v), 36, y); };
     row("RA", st.ra, 31); row("DEC", st.dec, 41); row("ROLL", st.roll, 51);
   } else oc.fillText("no attitude yet", 0, 41);

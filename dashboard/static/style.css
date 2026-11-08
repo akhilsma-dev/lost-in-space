@@ -72,6 +72,8 @@ button.chip { background: none; font: inherit; cursor: pointer; }
 .badge.search { color: var(--search); background: rgba(255, 184, 60, .1); animation: pulse 1.4s ease-in-out infinite; }
 .badge.nosig, .badge.calib { color: var(--nosig); background: rgba(86, 96, 122, .08); font-size: 26px; }
 .badge.calib { color: var(--con); }
+.badge.has-stage { flex-direction: column; gap: 8px; }
+.badge small { font-size: 12px; font-weight: 800; letter-spacing: .12em; opacity: .95; }
 @keyframes blink { 50% { background: rgba(255, 90, 78, .32); } }
 @keyframes pulse { 50% { background: rgba(255, 184, 60, .26); } }
 .lockmeta { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }

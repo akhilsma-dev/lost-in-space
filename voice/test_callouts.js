@@ -27,7 +27,7 @@ function run(name, steps, expect) {
   V._test_load(clips, ctx.Audio);
 
   const snap = (state, extra = {}) => ({ state, truth: { rate_dps: extra.rate ?? 0, glare: false, flash: extra.flash ?? 0 },
-    err: { point: 8 }, stats: {} });
+    est: { status: state, stage: extra.stage ?? state }, err: { point: 8 }, stats: {} });
   for (const [dur, state, extra] of steps) {
     for (let t = 0; t < dur; t += 66) {
       V.update(snap(state, extra));
@@ -37,7 +37,8 @@ function run(name, steps, expect) {
   }
   const said = V.history.map((h) => h[1]);
   if (expect.relocks) { const n = said.filter((x) => /^relock_/.test(x)).length; console.log(`${n >= expect.relocks ? "PASS" : "FAIL"}  ${name} (${n} relocks)\n      said: ${said.join(", ")}`); return n >= expect.relocks; }
-  const ok = expect.every((e) => said.some((s) => (e instanceof RegExp ? e.test(s) : s === e)));
+  const ok = expect.every((e) => said.some((s) => (e instanceof RegExp ? e.test(s) : s === e)))
+    && !(expect.not || []).some((e) => said.includes(e));
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}\n      said: ${said.join(", ")}`);
   return ok;
 }
@@ -62,4 +63,11 @@ all &= run("three flares", [[3000, "LOCK"],
   [1500, "LOST", { flash: 255 }], [3000, "LOCK"],
   [1500, "LOST", { flash: 255 }], [3000, "LOCK"],
   [1500, "LOST", { flash: 255 }], [3000, "LOCK"]], { relocks: 3, every: () => true });
+// 5. recovery: detumble from 15 deg/s (stabilized), then a search slew (announced, rate burst not read out)
+const ramp = [];
+for (let r = 15; r > 0; r -= 1) ramp.push([250, "SEARCH", { rate: r, stage: "DETUMBLING " + r }]);
+all &= run("detumble then search slew", [[3000, "LOCK", { rate: 15 }], [4000, "SEARCH", { rate: 15, stage: "RATE HIGH 15" }],
+  ...ramp, [9000, "SEARCH", { stage: "MATCHING" }], [3000, "SEARCH", { rate: 6, stage: "SEARCH SLEW" }],
+  [4000, "SEARCH", { stage: "MATCHING" }]],
+  Object.assign(["rate_0", "search"], { not: ["rate_5", "rate_10"] }));
 process.exitCode = all ? 0 : 1;

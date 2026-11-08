@@ -15,9 +15,16 @@ warping the image). In screen pixels the geometry is an ideal pinhole with the
 sim's known FOV, so tetra3 gets a tight fov_estimate.
 
 Status: a frame is good when tetra3 solves with >= --min-matches stars and
-false-match probability Prob <= --prob-max. LOCK needs --lock-frames good frames
-in a row (SEARCH while acquiring); once locked, the first bad frame gives LOST. confidence (0..1) =
-min(1, -log10(Prob)/20) * max(0, 1 - RMSE/--rmse-max); 0 when LOST.
+false-match probability Prob <= --prob-max. Acquisition (status SEARCH) goes through stages:
+DETECTING n (too few stars) -> MATCHING -> VERIFYING k/N (every --verify-spacing s a new good solve
+must agree with the previous verified attitude, dead-reckoned at the measured body rate) -> LOCK,
+about (--verify-n - 1) * --verify-spacing s after the first match. Once locked, the first bad frame
+gives LOST. confidence (0..1) = min(1, -log10(Prob)/20) * max(0, 1 - RMSE/--rmse-max); 0 unless LOCK.
+
+Recovery (--recover, default on): after --recover-after s without a lock the tracker commands the
+sim's tumble rate (UDP 5006 'rate <dps>', or the internal sim with --sim): DETUMBLING (ramp the
+rate down) if tumbling, else SEARCH SLEW (a short rate burst to a new patch of sky). Never while
+LOCKed. --no-recover turns it off.
 
 Truth: sim.live publishes truth on UDP 5009 (the dashboard has 5005); each frame is
 paired with the truth packet received closest to (capture time - --latency) and the
@@ -25,7 +32,7 @@ pointing error is printed. In --sim and --follow-sim modes truth is exact.
 
 Output: one JSON line per frame on UDP 127.0.0.1:5008 (dashboard), and the same
 line on 5007 (bridge.serial_bridge -> console OLED/LED/servos; --bridge-port 0 = off)
-  {"t","ra","dec","roll","fov","status","confidence","matches","prob","rmse","solve_ms",
+  {"t","ra","dec","roll","fov","status","stage","confidence","matches","prob","rmse","solve_ms",
    "n_centroids","centroids":[[x,y],...],"truth":{...}|null,"err_arcsec","roll_err_deg"}
   centroids are in screen pixels (x right, y down), brightest first, max 100.
 Frames: the frame each estimate was solved from, downscaled to --frame-w and contrast-stretched for
@@ -74,7 +81,13 @@ class SimSource:
     def _flare(self):
         self.att = random_attitude(self.rng)
         ax = self.rng.normal(size=3)
-        self.omega = ax / np.linalg.norm(ax) * math.radians(self.a.rate)
+        self.axis = ax / np.linalg.norm(ax)
+        self.omega = self.axis * math.radians(self.a.rate)
+
+    def set_rate(self, dps):
+        """Same as sim.live's 'rate <dps>' command (keeps the tumble axis)."""
+        self.a.rate = float(dps)
+        self.omega = self.axis * math.radians(self.a.rate)
 
     def read(self):
         if self.t >= self.next_flare:
@@ -167,7 +180,7 @@ class CameraSource:
 class Solver:
     def __init__(self, a, src):
         self.a, self.src = a, src
-        self.locked, self.streak = False, 0   # acquisition: --lock-frames good frames in a row before LOCK
+        self.acq = Acquisition(a)             # DETECTING -> MATCHING -> VERIFYING k/N -> LOCK
         self.t3 = load_tetra3()
         self.starnet = None
         if a.detector == "starnet":
@@ -221,16 +234,189 @@ class Solver:
             return None
         return min(1.0, -math.log10(max(prob, 1e-300)) / 20) * max(0.0, 1 - rmse / self.a.rmse_max)
 
-    def status(self, res):
-        conf = self.good(res)
-        if conf is None:
-            was, self.locked, self.streak = self.locked, False, 0
-            return ("LOST" if was else "SEARCH"), 0.0
-        self.streak += 1
-        if not self.locked and self.streak < self.a.lock_frames:
-            return "SEARCH", 0.0   # acquiring: solving, but not confirmed yet
-        self.locked = True
-        return "LOCK", round(conf, 3)
+    def status(self, t, res, n_stars):
+        """Acquisition state machine. Returns (status, confidence, stage).
+        status is LOCK / SEARCH / LOST as before; stage says what the tracker is doing right now."""
+        return self.acq.update(t, res, n_stars, self.good(res))
+
+
+class Acquisition:
+    """Lost-in-space acquisition with visible stages (times from the frame timestamps, so --sim runs
+    at simulated speed):
+
+      DETECTING n    fewer than --detect-min stars in the frame (whiteout, glare, blur)
+      MATCHING       enough stars, no trustworthy pattern match yet
+      RATE HIGH r    pattern matches, but the measured rate is above --acq-max-rate deg/s: too fast to
+                     confirm a lost-in-space solution (tracking once LOCKed works at higher rates)
+      VERIFYING k/N  a candidate attitude is being confirmed: every --verify-spacing s a new good solve
+                     must agree within --verify-tol deg with the previous verified attitude dead-reckoned
+                     forward at the body rate measured from consecutive solves. Disagreement restarts at
+                     MATCHING; no good solve for --verify-timeout s also restarts.
+      LOCK           N checks passed. Once locked, the first bad frame gives LOST (immediate), and so
+                     does a solve that jumps more than --jump-tol deg from the previous frame's attitude
+                     carried forward at the measured rate (a flare without whiteout, a false match).
+
+    The first good solve is check 1, so LOCK comes (N-1) * spacing s after the first match."""
+
+    def __init__(self, a):
+        self.a = a
+        self.locked = False
+        self.k = 0                 # verification checks passed
+        self.track = None          # dead-reckoned attitude, anchored at the last verified solve
+        self.t_ver = None          # time of the last verified solve
+        self.t_good = None         # time of the last good solve (any)
+        self.prev = None           # (t, Rotation) of the previous good solve, for the rate estimate
+        self.w = np.zeros(3)       # body rate estimate, rad/s
+        self.t_prop = None         # time track was last propagated to
+        self.lost_t = None         # when lock was last lost (or start), for recovery
+
+    def reset(self):
+        self.k, self.track, self.t_ver, self.prev, self.t_prop = 0, None, None, None, None
+        self.w = np.zeros(3)
+
+    @staticmethod
+    def angle_deg(r1, r2):
+        return math.degrees((r1.inv() * r2).magnitude())
+
+    def _propagate(self, t):
+        if self.track is not None and self.t_prop is not None and t > self.t_prop:
+            self.track = self.track * type(self.track).from_rotvec(self.w * (t - self.t_prop))
+        self.t_prop = t
+
+    def update(self, t, res, n_stars, conf):
+        a = self.a
+        if self.lost_t is None:
+            self.lost_t = t
+        att = from_radecroll(float(res["RA"]), float(res["Dec"]), float(res["Roll"])) if conf is not None else None
+
+        jump = 0.0
+        if att is not None:
+            # body rate from consecutive good solves (frame-to-frame, so the tumble changing is followed);
+            # jump = how far this solve is from the previous one carried forward at the old rate
+            if self.prev is not None and 0.02 < t - self.prev[0] < 0.6:
+                dt = t - self.prev[0]
+                jump = self.angle_deg(self.prev[1] * type(att).from_rotvec(self.w * dt), att)
+                w = (self.prev[1].inv() * att).as_rotvec() / dt
+                if np.linalg.norm(w) < math.radians(90):
+                    self.w = w
+            self.prev = (t, att)
+
+        if self.locked:
+            if conf is None or jump > self.a.jump_tol:
+                if conf is not None:
+                    print(f"[track] attitude jumped {jump:.1f} deg in one frame: LOST")
+                self.locked, self.lost_t = False, t
+                self.reset()
+                return "LOST", 0.0, "LOST"
+            return "LOCK", round(conf, 3), "LOCK"
+
+        self._propagate(t)
+        if att is not None:
+            self.t_good = t
+            rate = math.degrees(np.linalg.norm(self.w))
+            if self.k == 0:                                   # first match: candidate, check 1
+                self.k, self.track, self.t_ver = 1, att, t
+            elif rate > a.acq_max_rate:                       # too fast to confirm: keep re-anchoring
+                self.k, self.track, self.t_ver = 1, att, t
+                return "SEARCH", 0.0, f"RATE HIGH {rate:.1f}"
+            elif t - self.t_ver >= a.verify_spacing:          # time for the next check
+                slop = a.verify_tol + 0.1 * math.degrees(np.linalg.norm(self.w)) * (t - self.t_ver)
+                d = self.angle_deg(self.track, att)
+                if d <= slop:
+                    self.k += 1
+                    self.track, self.t_ver = att, t           # re-anchor on the verified solve
+                else:
+                    print(f"[verify] check {self.k + 1} disagrees by {d:.1f} deg (tol {slop:.1f}): restart")
+                    self.reset()
+                    self.k, self.track, self.t_ver, self.prev, self.t_good = 1, att, t, (t, att), t
+            if self.k >= a.verify_n:
+                self.locked = True
+                self.k, self.track, self.t_ver, self.t_prop = 0, None, None, None   # keep prev / w for tracking
+                return "LOCK", round(conf, 3), "LOCK"
+        elif self.k and t - (self.t_good or t) > a.verify_timeout:
+            self.reset()                                      # candidate went stale
+
+        if self.k:
+            return "SEARCH", 0.0, f"VERIFYING {self.k}/{a.verify_n}"
+        if n_stars < a.detect_min:
+            return "SEARCH", 0.0, f"DETECTING {n_stars}"
+        return "SEARCH", 0.0, "MATCHING"
+
+
+class Recovery:
+    """Lost-in-space recovery maneuvers, through the sim's existing 'rate <dps>' command (UDP 5006;
+    in --sim mode the internal sim). Self-contained: --no-recover removes it entirely.
+
+    Only acts while not LOCKed. The clock runs from the last stable lock (held --stable-lock s; a lock
+    that keeps flapping does not count) or the end of the last maneuver:
+      DETUMBLING r   after --detumble-after s, if tumbling faster than --detumble-min deg/s (rate from
+                     truth): ramp the rate down at --detumble-accel deg/s^2 (reaction wheels) to 0.
+                     Once started it finishes, even if the tracker locks on the way down.
+      SEARCH SLEW    after --recover-after s at rest with no lock and no candidate being VERIFIED:
+                     --slew-rate deg/s for --slew-time s (a new patch of sky), then back to 0 and the
+                     clock restarts; repeats while lost.
+    While LOCKed nothing is sent: knob tumble during LOCK is left alone."""
+
+    CMD_HZ = 5.0
+
+    def __init__(self, a, send_rate):
+        self.a, self.send_rate = a, send_rate
+        self.mode = None           # None | "detumble" | "slew"
+        self.t0 = 0.0
+        self.r0 = 0.0
+        self.t_cmd = -1e9
+        self.idle_since = None     # last time we had a stable lock (or a maneuver ended)
+        self.lock_since = None     # start of the current LOCK
+        self.cmd_rate = None       # last rate we commanded
+        self.slews = 0
+
+    def _cmd(self, t, r, force=False):
+        r = max(0.0, round(r, 1))
+        if force or (t - self.t_cmd >= 1.0 / self.CMD_HZ and r != self.cmd_rate):
+            self.send_rate(r)
+            self.cmd_rate, self.t_cmd = r, t
+
+    def update(self, t, status, stage, rate_now):
+        """rate_now: current tumble rate deg/s from truth (None if unknown). Returns the stage to show
+        instead of the solver's, or None."""
+        a = self.a
+        if self.mode == "detumble":          # once braking has started it finishes, even if we lock on the way
+            r = self.r0 - a.detumble_accel * (t - self.t0)
+            if r > 0:
+                self._cmd(t, r)
+                return None if status == "LOCK" or stage.startswith("VERIFYING") else f"DETUMBLING {r:.1f}"
+            self._cmd(t, 0.0, force=True)
+            self.mode, self.idle_since = None, t
+            print(f"[recover] detumbled ({t - self.t0:.1f} s)")
+        elif self.mode == "slew":
+            if t - self.t0 < a.slew_time:
+                return "SEARCH SLEW"
+            self._cmd(t, 0.0, force=True)
+            self.mode, self.idle_since = None, t
+            print("[recover] slew done, settling")
+        if self.idle_since is None:
+            self.idle_since = t
+        if status == "LOCK":
+            self.lock_since = t if self.lock_since is None else self.lock_since
+            if t - self.lock_since >= a.stable_lock:   # a lock that holds resets the clock;
+                self.idle_since, self.slews = t, 0       # a flapping one does not
+            return None
+        self.lock_since = None
+        waited = t - self.idle_since
+        r = rate_now if rate_now is not None else (self.cmd_rate or 0.0)
+        if r > a.detumble_min and waited >= a.detumble_after:
+            self.mode, self.t0, self.r0 = "detumble", t, r
+            print(f"[recover] no lock for {t - self.idle_since:.1f} s at {r:.1f} deg/s: detumbling")
+            self._cmd(t, r - a.detumble_accel / self.CMD_HZ, force=True)
+            return f"DETUMBLING {r:.1f}"
+        if waited < a.recover_after or stage.startswith("VERIFYING"):
+            return None                        # never slew away from a candidate being checked
+        self.slews += 1
+        self.mode, self.t0 = "slew", t
+        print(f"[recover] no lock for {t - self.idle_since:.1f} s: search slew #{self.slews} "
+              f"({a.slew_rate:g} deg/s for {a.slew_time:g} s)")
+        self._cmd(t, a.slew_rate, force=True)
+        return "SEARCH SLEW"
 
 
 class FrameSender:
@@ -269,7 +455,7 @@ class FrameSender:
         hdr = {"t": t, "w": small.shape[1], "h": small.shape[0], "scale": s, "sw": sw, "sh": sh,
                "screen_to_cam": None if H is None else np.linalg.inv(H).tolist(),
                "cam_cents": np.round(np.asarray(c_cam[:100], float).reshape(-1, 2) * s, 1).tolist(),
-               "est": {k: est[k] for k in ("status", "ra", "dec", "roll", "fov", "centroids")}}
+               "est": {k: est.get(k) for k in ("status", "stage", "ra", "dec", "roll", "fov", "centroids")}}
         hb = json.dumps(hdr, separators=(",", ":")).encode()
         try:
             self.sock.sendto(struct.pack(">I", len(hb)) + hb + buf.tobytes(), ("127.0.0.1", self.port))
@@ -324,9 +510,37 @@ def main():
     sol.add_argument("--timeout-ms", type=int, default=500)
     sol.add_argument("--min-matches", type=int, default=8)
     sol.add_argument("--prob-max", type=float, default=1e-6)
-    sol.add_argument("--lock-frames", type=int, default=10,
-                     help="good frames in a row before declaring LOCK (acquisition dwell; ~1 s at 10 fps). "
-                          "Once locked, one bad frame drops to LOST")
+    acq = ap.add_argument_group("acquisition (stages before LOCK)")
+    acq.add_argument("--detect-min", type=int, default=8,
+                     help="stars needed in the frame to leave DETECTING for MATCHING")
+    acq.add_argument("--verify-n", type=int, default=6,
+                     help="verification checks before LOCK (the first match is check 1)")
+    acq.add_argument("--verify-spacing", type=float, default=1.0,
+                     help="s between verification checks; LOCK ~ (verify-n - 1) * spacing s after the first match")
+    acq.add_argument("--verify-tol", type=float, default=2.0,
+                     help="deg: a check must agree this well with the dead-reckoned previous verified attitude "
+                          "(+10%% of the angle turned since)")
+    acq.add_argument("--acq-max-rate", type=float, default=8.0,
+                     help="deg/s: no verification above this measured rate (stage RATE HIGH); LOCK tracks faster")
+    acq.add_argument("--jump-tol", type=float, default=5.0,
+                     help="deg: while LOCKed, a frame-to-frame attitude jump larger than this gives LOST")
+    acq.add_argument("--verify-timeout", type=float, default=2.5,
+                     help="s without a good solve while VERIFYING before the candidate is dropped")
+    rec = ap.add_argument_group("recovery maneuvers (while not locked)")
+    rec.add_argument("--recover", action=argparse.BooleanOptionalAction, default=True,
+                     help="command the sim's tumble rate to recover: detumble, then search slews")
+    rec.add_argument("--recover-after", type=float, default=8.0,
+                     help="s without a stable lock (at rest) before a search slew")
+    rec.add_argument("--detumble-after", type=float, default=3.0,
+                     help="s without a stable lock before detumbling, if tumbling faster than --detumble-min")
+    rec.add_argument("--stable-lock", type=float, default=3.0,
+                     help="s a LOCK must hold to reset the recovery clock")
+    rec.add_argument("--detumble-min", type=float, default=1.0,
+                     help="deg/s: tumbling faster than this gets a detumble, slower gets a search slew")
+    rec.add_argument("--detumble-accel", type=float, default=4.0, help="detumble ramp, deg/s per s")
+    rec.add_argument("--slew-rate", type=float, default=6.0, help="search slew rate, deg/s")
+    rec.add_argument("--slew-time", type=float, default=3.0, help="search slew duration, s")
+    rec.add_argument("--sim-cmd-port", type=int, default=5006, help="sim.live command port for recovery")
     sol.add_argument("--rmse-max", type=float, default=900.0, help="arcsec, for the confidence score")
     io = ap.add_argument_group("io")
     io.add_argument("--truth-port", type=int, default=TRUTH_PORT)
@@ -350,8 +564,17 @@ def main():
     solver = Solver(a, src)
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+    recovery = None
+    if a.recover:
+        if isinstance(src, SimSource):
+            send_rate = src.set_rate
+        else:
+            def send_rate(r):
+                out.sendto(f"rate {r:g}".encode(), ("127.0.0.1", a.sim_cmd_port))
+        recovery = Recovery(a, send_rate)
+    t_start, t_unlock, stage_prev = None, None, None
     frames = FrameSender(a.frame_port, a.frame_w, a.frame_hz) if a.frame_port else None
-    stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0}
+    stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0, "acq": []}
     shot, shot_lock = None, False
     try:
         while not a.frames or stats["n"] < a.frames:
@@ -363,9 +586,23 @@ def main():
                 continue  # sim is showing the checkerboard
             fov = truth["fov"] if truth and "fov" in truth else a.fov
             c_scr, c_cam, res, ms = solver.solve(gray, fov)
-            status, conf = solver.status(res)
+            status, conf, stage = solver.status(t, res, len(c_scr))
+            if recovery is not None:
+                stage = recovery.update(t, status, stage, (truth or {}).get("rate_dps")) or stage
+            # acquisition timing: from start / loss of lock to LOCK
+            t_start = t if t_start is None else t_start
+            if status != "LOCK" and t_unlock is None:
+                t_unlock = t
+            if status == "LOCK" and t_unlock is not None:
+                print(f"[acq] LOCK after {t - t_unlock:.1f} s")
+                stats["acq"].append(t - t_unlock)
+                t_unlock = None
+            key = stage if stage.startswith("VERIFYING") else stage.split()[0]   # not every star count / rate
+            if key != stage_prev and a.quiet:
+                print(f"[stage] {t - t_start:7.2f} s  {stage}")
+            stage_prev = key
             solved = res.get("RA") is not None
-            msg = {"t": t, "ra": None, "dec": None, "roll": None, "fov": None, "status": status,
+            msg = {"t": t, "ra": None, "dec": None, "roll": None, "fov": None, "status": status, "stage": stage,
                    "confidence": conf, "matches": int(res.get("Matches") or 0),
                    "prob": float(res["Prob"]) if solved else None,
                    "rmse": float(res["RMSE"]) if solved else None, "solve_ms": round(ms, 1),
@@ -395,7 +632,7 @@ def main():
                 if msg["err_arcsec"] is not None:
                     stats["err"].append(msg["err_arcsec"])
                     stats["roll"].append(abs(msg["roll_err_deg"]))
-            line = (f"{status:6s} conf {conf:4.2f} | {len(c_scr):3d} blobs {msg['matches']:3d} matched | "
+            line = (f"{status:6s} {stage:16s} conf {conf:4.2f} | {len(c_scr):3d} blobs {msg['matches']:3d} matched | "
                     + (f"RA {msg['ra']:7.2f} Dec {msg['dec']:6.2f} Roll {msg['roll']:6.1f} "
                        f"Prob {msg['prob']:.0e} RMSE {msg['rmse']:5.0f}\"" if solved else "no solution".ljust(62))
                     + f" | {ms:4.0f} ms"
@@ -421,6 +658,8 @@ def main():
     n = stats["n"]
     if n:
         e = np.array(stats["err"])
+        if stats["acq"]:
+            print("    acquisition times (start/loss -> LOCK): " + ", ".join(f"{x:.1f} s" for x in stats["acq"]))
         print(f"\n=== {n} frames: LOCK {stats['lock']}/{n} ({100 * stats['lock'] / n:.0f}%), "
               f"median {np.median(stats['nc']):.0f} blobs, median solve {np.median(stats['ms']):.0f} ms")
         if len(e):

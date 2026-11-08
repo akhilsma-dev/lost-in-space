@@ -1,7 +1,7 @@
 """Virtual console: the Arduino mission console as a web page, for when the board is not there.
 
 The bridge treats it exactly like the real board. It sends the same serial lines
-(STATUS / ATT / SERVO) and gets the same lines back (BTN FLARE / KNOB n). The page
+(STATUS / STAGE / ATT / SERVO) and gets the same lines back (BTN FLARE / KNOB n). The page
 (bridge/static/console.html) runs the firmware's behaviour: OLED layout, lock LED,
 buzzer chirp/alarm, servo slew limit and the 3 s NO LINK timeout.
 
@@ -16,7 +16,7 @@ HTTP:
   GET  /events    Server-Sent Events, one serial line per event:
                     "> STATUS LOCK"  bridge -> board (what the firmware would receive)
                     "< KNOB 512"     board -> bridge (so every open page shows the same knob)
-                  on connect: "< KNOB n" and the latest STATUS / ATT / SERVO lines
+                  on connect: "< KNOB n" and the latest STATUS / STAGE / ATT / SERVO lines
   POST /input     body "BTN FLARE" or "KNOB <0-1023>" (what the firmware would send)
 """
 import http.server
@@ -122,7 +122,7 @@ class WebBoard(FakeBoard):
                 self.send_header("Connection", "keep-alive")
                 self.end_headers()
                 q = queue.Queue(maxsize=500)
-                for ev in [f"< KNOB {board.knob}"] + ["> " + board.latest[k] for k in ("STATUS", "ATT", "SERVO")
+                for ev in [f"< KNOB {board.knob}"] + ["> " + board.latest[k] for k in ("STATUS", "STAGE", "ATT", "SERVO")
                                                      if k in board.latest]:
                     q.put(ev)
                 with board.clients_lock:

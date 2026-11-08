@@ -63,8 +63,10 @@ function updateText() {
 
   const b = $("lockBadge");
   const cls = { "LOCK": "lock", "LOST": "lost", "SEARCH": "search", "NO SIGNAL": "nosig", "CALIB": "calib" }[s.state];
-  b.className = "badge " + cls;
-  b.innerHTML = s.state === "NO SIGNAL" ? "NO<br>SIGNAL" : s.state === "CALIB" ? "CALIB-<br>RATING" : s.state;
+  const stage = stageText(s);
+  b.className = "badge " + cls + (stage ? " has-stage" : "");
+  b.innerHTML = s.state === "NO SIGNAL" ? "NO<br>SIGNAL" : s.state === "CALIB" ? "CALIB-<br>RATING"
+    : stage ? `<span>${s.state}</span><small>${stage}</small>` : s.state;
 
   const e = s.est, lock = e && e.status === "LOCK";
   const conf = lock ? e.confidence : 0;
@@ -238,7 +240,24 @@ function drawView() {
     ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.font = "800 22px -apple-system, Helvetica, Arial";
     ctx.fillStyle = S.state === "LOST" ? C.lost : C.search;
     ctx.fillText(S.state === "LOST" ? "LOCK LOST" : "SEARCHING THE SKY…", ox + 16, oy + 14);
+    const stage = stageText(S);
+    if (stage) { ctx.font = "700 15px -apple-system, Helvetica, Arial"; ctx.fillText(stage, ox + 16, oy + 42); }
   }
+}
+
+// acquisition stage from camera.solve_live ("VERIFYING 3/6", "DETUMBLING 12.0", ...) as a short label;
+// null when locked or when the solver does not send stages
+function stageText(S) {
+  const st = S && S.est && S.est.stage;
+  if (!st || S.state === "LOCK" || S.state === "NO SIGNAL" || S.state === "CALIB" || st === S.state) return null;
+  const [w, x] = st.split(" ", 2), rest = st.slice(w.length + 1);
+  if (w === "DETECTING") return `DETECTING STARS · ${rest}`;
+  if (w === "MATCHING") return "MATCHING PATTERN";
+  if (w === "VERIFYING") return `VERIFYING ${rest}`;
+  if (w === "RATE") return `RATE TOO HIGH · ${(+st.split(" ")[2]).toFixed(1)}°/s`;
+  if (w === "DETUMBLING") return `DETUMBLING · ${(+x).toFixed(1)}°/s`;
+  if (st === "SEARCH SLEW") return "SEARCH SLEW";
+  return st;
 }
 
 // ---------------------------------------------------------------- 3D spacecraft

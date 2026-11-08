@@ -27,6 +27,7 @@ after opening before it sends anything.
 | `ATT <ra> <dec> <roll>` | attitude in degrees, shown on the OLED |
 | `SERVO <pan> <tilt>` | servo targets in degrees (pan D9 clamped 0–180, tilt D10 clamped 20–160). The board slews towards them at ≤ 60 °/s. |
 | `PING` | board replies `PONG` then `KNOB <n>` |
+| `STAGE <text>` | acquisition stage from the solver, e.g. `STAGE VERIFYING 3/6`, `STAGE DETUMBLING 12.0`, `STAGE SEARCH SLEW`, `STAGE LOCK` (upper-case ASCII, ≤ 40 chars of text, sent on change). Shown by the virtual console under the status title while not locked. **Optional:** the bridge sends it only to the virtual / fake board by default (`--stage-lines` for a real board); the current firmware does not handle it and would answer `ERR unknown STAGE`. |
 
 **Link timeout:** if the board receives no line for 3 s it shows `NO LINK`
 and turns the LED off; servos hold their last position. The bridge re-sends
@@ -56,5 +57,5 @@ and turns the LED off; servos hold their last position. The bridge re-sends
 
 | Port | Direction | Content |
 |---|---|---|
-| 5006 | bridge → sim | `flare`, `rate <deg/s>` (sim/live.py command port) |
-| 5007 | solver → bridge | JSON per line/datagram: `{"status": "LOCK", "ra": .., "dec": .., "roll": ..}`; optional `"pan"`, `"tilt"` override the servo mapping (default mapping: model centres on LOCK and shows turn since then; see `bridge/README.md`) |
+| 5006 | bridge → sim | `flare`, `rate <deg/s>` (sim/live.py command port; `camera.solve_live` also sends `rate` here for its recovery maneuvers) |
+| 5007 | solver → bridge | JSON per line/datagram: `{"status": "LOCK", "ra": .., "dec": .., "roll": ..}`; optional `"stage"` → `STAGE` line; optional `"pan"`, `"tilt"` override the servo mapping (default mapping: model centres on LOCK and shows turn since then; see `bridge/README.md`) |

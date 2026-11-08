@@ -22,7 +22,8 @@ const Voice = (() => {
   const v = { init: false, state: null, everLock: false, outageAt: null, flareAt: -1e9, prevFlash: 0,
               relockFrom: null, sawUnlock: false,   // flare -> next lock: always announced
               flaps: [], muteLockUntil: 0, lastUnstable: -1e9, cand: null, candAt: 0, lastSearch: -1e9, accDue: null, lastAcc: -1e9,
-              rateBucket: null, rateSeen: null, rateAt: 0, glare: null };
+              rateBucket: null, rateSeen: null, rateAt: 0, glare: null,
+              slewing: false, lastSlew: -1e9, rateQuietUntil: 0 };
 
   try { enabled = localStorage.getItem("voice.enabled") !== "0"; } catch (e) {}
 
@@ -152,6 +153,16 @@ const Voice = (() => {
       if (v.relockFrom != null && now - v.relockFrom > 30000) v.relockFrom = null;   // never re-locked
     }
 
+    // recovery maneuver from camera.solve_live: a search slew is announced ("Searching the sky.");
+    // its rate burst is not read out as tumble. A detumble ends in "Spacecraft stabilized." via the rate rule.
+    const stage = (S.est && S.est.stage) || "";
+    const slewing = stage === "SEARCH SLEW";
+    if (slewing && !v.slewing && now - v.lastSlew > SEARCH_COOLDOWN_MS && now - v.flareAt > FLARE_QUIET_MS) {
+      say("search"); v.lastSlew = now; v.lastSearch = now;
+    }
+    v.slewing = slewing;
+    if (slewing) v.rateQuietUntil = now + RATE_SETTLE_MS + 500;
+
     // how good the lock is, once it has settled
     if (v.accDue && now >= v.accDue && st === "LOCK") {
       v.accDue = null;
@@ -165,7 +176,7 @@ const Voice = (() => {
       const r = tr.rate_dps || 0;
       if (r !== v.rateSeen) { v.rateSeen = r; v.rateAt = now; }
       const b = bucket(RATE_BUCKETS, r);
-      if (b !== v.rateBucket && now - v.rateAt > RATE_SETTLE_MS) { v.rateBucket = b; say("rate_" + b); }
+      if (b !== v.rateBucket && now - v.rateAt > RATE_SETTLE_MS && now >= v.rateQuietUntil) { v.rateBucket = b; say("rate_" + b); }
       if (!!tr.glare !== v.glare) { v.glare = !!tr.glare; say(v.glare ? "glare_on" : "glare_off"); }
     }
   }
