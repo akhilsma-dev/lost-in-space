@@ -349,6 +349,8 @@ def main():
                      help="forget candidates not seen for this long, s (0 = 1.5 scan cycles with --nav-scan, else 60)")
     nav.add_argument("--nav-jd", type=float, default=2461352.5,
                      help="epoch (TDB JD) if the truth packet carries none; sim.live --planets default")
+    nav.add_argument("--nav-every", type=float, default=0.5,
+                     help="look for planets in at most one locked frame per this many s (planets barely move)")
     nav.add_argument("--cmd-port", type=int, default=5006, help="sim.live command port (for --nav-scan)")
     io = ap.add_argument_group("io")
     io.add_argument("--truth-port", type=int, default=TRUTH_PORT)
@@ -373,7 +375,7 @@ def main():
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
     frames = FrameSender(a.frame_port, a.frame_w, a.frame_hz) if a.frame_port else None
-    navi, scan_i, scan_t, nav_print = None, 0, 0.0, 0.0
+    navi, scan_i, scan_t, nav_print, nav_t = None, 0, 0.0, 0.0, 0.0
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0}
     shot, shot_lock = None, False
     try:
@@ -416,7 +418,9 @@ def main():
                         print(f"[nav] navigator ready ({src.sw}x{src.sh}, FOV {fov} deg)")
                     if truth and truth.get("jd"):
                         navi.jd = truth["jd"]   # the spacecraft clock; the sim's epoch
-                    navi.observe(gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)
+                    if time.time() - nav_t >= a.nav_every:   # the candidate pass costs ~100 ms
+                        nav_t = time.time()
+                        navi.observe(gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)
                 msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
                 nv = msg["nav"]
                 if time.time() - nav_print > 5:

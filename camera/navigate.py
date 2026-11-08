@@ -489,6 +489,7 @@ class LiveNavigator:
         self.fix = None          # last result (dict) or None
         self.fix_note = "collecting"
         self.last_att = None
+        self.last_solve = 0.0
         threading.Thread(target=self._run, daemon=True, name="nav").start()
 
     def observe(self, gray, att, t=None):
@@ -497,6 +498,7 @@ class LiveNavigator:
         att, _, rays, _, fl = self.finder.find(gray, att)
         self.last_att = att
         cos_m = math.cos(math.radians(self.merge))
+        new = False
         with self.lock:
             for r, f in zip(rays, fl):
                 for c in self.buf:
@@ -509,8 +511,13 @@ class LiveNavigator:
                         break
                 else:
                     self.buf.append({"dir": r, "flux": f, "n": 1, "t": t})
+                    new = True
+            n0 = len(self.buf)
             self.buf = [c for c in self.buf if t - c["t"] < self.memory]
-        if len(rays):
+            new |= len(self.buf) != n0
+        # re-solve when the candidate list changed, else refresh slowly (averaged directions):
+        # the fix runs in a thread that shares the GIL with the frame loop, so keep it rare
+        if new or (len(rays) and time.time() - self.last_solve > 10.0):
             self.dirty.set()
         return att
 
@@ -529,6 +536,7 @@ class LiveNavigator:
         while True:
             self.dirty.wait()
             self.dirty.clear()
+            self.last_solve = time.time()
             cand = self.candidates()[:self.max_solve]
             if len(cand) < 3:
                 self.fix_note = "collecting"
