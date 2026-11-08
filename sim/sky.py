@@ -74,13 +74,18 @@ class SkyRenderer:
         self.w, self.h, self.fov = width, height, fov_deg
         self.f = (width / 2) / math.tan(math.radians(fov_deg / 2))
         self.hip, self.mag, self.vec = load_stars(mag_limit)
-        m = self.mag
-        # peak brightness: compressed magnitude scale, floor so mag 5.5 is still visible
-        self.peak = np.clip(255 * 10 ** (-0.2 * (m - 1.0)), 55, 255).astype(np.float32)
-        sigma = np.clip(1.6 + 0.4 * (mag_limit - m), 1.6, 3.6)
-        self.bin = np.abs(sigma[:, None] - self.SIGMA_BINS[None]).argmin(1)
+        self.mag_limit = mag_limit
+        self.peak, self.bin = self.blob_style(self.mag)
         # half-diagonal FOV + margin, for cheap culling
         self.cos_cull = math.cos(math.atan(math.hypot(width, height) / 2 / self.f) + math.radians(3))
+
+    def blob_style(self, mag):
+        """Magnitudes -> (peak brightness, sigma bin index). Stars and extra sources share it."""
+        m = np.asarray(mag, np.float32)
+        # peak brightness: compressed magnitude scale, floor so mag 5.5 is still visible
+        peak = np.clip(255 * 10 ** (-0.2 * (m - 1.0)), 55, 255).astype(np.float32)
+        sigma = np.clip(1.6 + 0.4 * (self.mag_limit - m), 1.6, 3.6)
+        return peak, np.abs(sigma[:, None] - self.SIGMA_BINS[None]).argmin(1)
 
     def project(self, vecs, att):
         """Inertial unit vectors -> (px, py, in_front). Works for any vectors."""
@@ -91,12 +96,21 @@ class SkyRenderer:
             py = self.h / 2 + self.f * cam[:, 1] / z
         return px, py, z > 0.05
 
-    def render(self, att, omega=None, exposure=0.0):
+    def render(self, att, omega=None, exposure=0.0, extra=None):
         """att: attitude at mid-exposure. omega: body-frame angular velocity
-        (rad/s, 3-vector). exposure: seconds. Returns float32 image (0..255+)."""
+        (rad/s, 3-vector). exposure: seconds. extra: optional (unit vectors (N, 3), magnitudes
+        (N,)) of additional point sources (planets) drawn in the same blob style as the stars;
+        sources fainter than the renderer's mag limit are skipped. Returns float32 image (0..255+)."""
+        vec_all, peak_all, bin_all = self.vec, self.peak, self.bin
+        if extra is not None and len(extra[0]):
+            ev, em = np.asarray(extra[0], np.float64).reshape(-1, 3), np.asarray(extra[1], np.float32)
+            ok = em <= self.mag_limit
+            ep, eb = self.blob_style(em[ok])
+            vec_all = np.concatenate([vec_all, ev[ok]])
+            peak_all, bin_all = np.concatenate([peak_all, ep]), np.concatenate([bin_all, eb])
         bore = att.as_matrix()[:, 2]
-        near = np.flatnonzero(self.vec @ bore > self.cos_cull)
-        vec, peak, bins = self.vec[near], self.peak[near], self.bin[near]
+        near = np.flatnonzero(vec_all @ bore > self.cos_cull)
+        vec, peak, bins = vec_all[near], peak_all[near], bin_all[near]
 
         rate = 0.0 if omega is None else float(np.linalg.norm(omega))
         smear_px = rate * exposure * self.f

@@ -9,6 +9,10 @@
 #   demo/fake_demo.sh --starnet  StarNet (ml/, our CNN) finds the stars, tetra3 matches them (GPU/MPS if present)
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
+#   demo/fake_demo.sh --nav      position from planets: hidden position + planets on screen; WHERE AM I? on the
+#                                virtual console scans 8 ecliptic pointings (3 s each, paused while spinning) and
+#                                fixes the position (dashboard POSITION panel); with --board it scans continuously;
+#                                a flare also moves the spacecraft, so the position is found again after it
 #
 # Dashboard: http://localhost:8080 (V = voice callouts on/off)   Virtual console: http://localhost:8081   Logs: $LOG_DIR (default: a temp folder, printed at start)
 # Ctrl+C (or q in keyboard mode) stops everything.
@@ -20,7 +24,7 @@ if [[ -z "$PY" ]]; then
   if [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python; fi
 fi
 
-BOARD=0 TUNED=1 STARNET=0 FULL=0 OPEN=0 WEB=1
+BOARD=0 TUNED=1 STARNET=0 FULL=0 OPEN=0 WEB=1 NAV=0
 for arg in "$@"; do
   case "$arg" in
     --board) BOARD=1 ;;
@@ -30,7 +34,8 @@ for arg in "$@"; do
     --full)  FULL=1 ;;
     --open)  OPEN=1 ;;
     --no-web) WEB=0 ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    --nav)   NAV=1 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg (see --help)"; exit 1 ;;
   esac
 done
@@ -54,6 +59,7 @@ pkill -f -- "[Pp]ython[0-9.]* -u -m (sim\.live|camera\.solve_live|dashboard|brid
 sleep 0.5
 
 SIM_ARGS=(); [[ $FULL == 0 ]] && SIM_ARGS+=(--window)
+[[ $NAV == 1 ]] && SIM_ARGS+=(--planets --flare-moves)
 "$PY" -u -m sim.live ${SIM_ARGS[@]+"${SIM_ARGS[@]}"} > "$LOG_DIR/sim.log" 2>&1 &
 PIDS+=($!)
 
@@ -67,6 +73,12 @@ SOLVE_ARGS=(--follow-sim --quiet)
 if [[ $STARNET == 1 ]]; then SOLVE_ARGS+=(--detector starnet); SOLVER_NAME=StarNet
 elif [[ $TUNED == 1 ]]; then SOLVE_ARGS+=(--max-area 5000); SOLVER_NAME=tuned
 else SOLVER_NAME=classical; fi
+# planet nav: with the virtual console the scan runs when WHERE AM I? is pressed; a real board has no
+# such button, so there it scans continuously (both pause while the craft spins)
+if [[ $NAV == 1 ]]; then
+  SOLVE_ARGS+=(--nav --nav-scan 3 --nav-reset-on-blind); SOLVER_NAME="$SOLVER_NAME + planet nav"
+  [[ $BOARD == 0 && $WEB == 1 ]] && SOLVE_ARGS+=(--nav-scan-mode button)
+fi
 "$PY" -u -m camera.solve_live "${SOLVE_ARGS[@]}" > "$LOG_DIR/solve.log" 2>&1 &
 PIDS+=($!)
 
@@ -79,7 +91,7 @@ for i in $(seq 1 120); do
       echo "[demo] a component exited early; logs in $LOG_DIR:"; tail -n 5 "$LOG_DIR"/*.log; exit 1
     fi
   done
-  grep -qE "^(LOCK|LOST) " "$LOG_DIR/solve.log" 2>/dev/null && break
+  grep -qE "^(LOCK|LOST|SEARCH) " "$LOG_DIR/solve.log" 2>/dev/null && break
   [[ $i == 120 ]] && { echo "[demo] solver gave no answer in 60 s; see $LOG_DIR/solve.log"; exit 1; }
   sleep 0.5
 done

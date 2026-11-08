@@ -22,7 +22,10 @@ const Voice = (() => {
   const v = { init: false, state: null, everLock: false, outageAt: null, flareAt: -1e9, prevFlash: 0,
               relockFrom: null, sawUnlock: false,   // flare -> next lock: always announced
               flaps: [], muteLockUntil: 0, lastUnstable: -1e9, cand: null, candAt: 0, lastSearch: -1e9, accDue: null, lastAcc: -1e9,
-              rateBucket: null, rateSeen: null, rateAt: 0, glare: null };
+              rateBucket: null, rateSeen: null, rateAt: 0, glare: null,
+              slewing: false, lastSlew: -1e9, rateQuietUntil: 0,
+              saidVerify: false, stagePrev: "", lastDetumble: -1e9,
+              navActive: false, navHeld: false, navFix: false };
 
   try { enabled = localStorage.getItem("voice.enabled") !== "0"; } catch (e) {}
 
@@ -98,6 +101,8 @@ const Voice = (() => {
       v.init = true; v.state = v.cand = st; v.everLock = st === "LOCK";
       if (st !== "LOCK") v.outageAt = now;
       if (tr) { v.rateBucket = bucket(RATE_BUCKETS, tr.rate_dps || 0); v.rateSeen = tr.rate_dps; v.glare = !!tr.glare; v.prevFlash = tr.flash || 0; }
+      v.stagePrev = (S.est && S.est.stage) || ""; v.saidVerify = v.stagePrev.startsWith("VERIFYING");
+      v.navFix = !!(S.nav && S.nav.est_au); v.navActive = !!(S.nav && S.nav.scan && S.nav.scan.active && S.nav.scan.mode === "button");
       return;
     }
 
@@ -152,6 +157,35 @@ const Voice = (() => {
       if (v.relockFrom != null && now - v.relockFrom > 30000) v.relockFrom = null;   // never re-locked
     }
 
+    // recovery maneuver from camera.solve_live: a search slew is announced ("Searching the sky.");
+    // its rate burst is not read out as tumble. A detumble ends in "Spacecraft stabilized." via the rate rule.
+    const stage = (S.est && S.est.stage) || "";
+    const slewing = stage === "SEARCH SLEW";
+    if (slewing && !v.slewing && now - v.lastSlew > SEARCH_COOLDOWN_MS && now - v.flareAt > FLARE_QUIET_MS) {
+      say("search"); v.lastSlew = now; v.lastSearch = now;
+    }
+    v.slewing = slewing;
+    if (slewing) v.rateQuietUntil = now + RATE_SETTLE_MS + 500;
+
+    // acquisition stages: the first candidate of each outage ("Star pattern found. Verifying.") and the
+    // start of a detumble maneuver
+    if (st === "LOCK") v.saidVerify = false;
+    else if (stage.startsWith("VERIFYING") && !v.saidVerify) { say("verifying"); v.saidVerify = true; }
+    if (stage.startsWith("DETUMBLING") && !v.stagePrev.startsWith("DETUMBLING") && now - v.lastDetumble > SEARCH_COOLDOWN_MS) {
+      say("detumble"); v.lastDetumble = now;
+    }
+    v.stagePrev = stage;
+
+    // WHERE AM I? (solve_live --nav-scan-mode button): sweep starts, or waits for the spin to stop; first fix
+    const nav = S.nav, sc = nav && nav.scan;
+    const navActive = !!(sc && sc.active && sc.mode === "button"), held = !!(sc && sc.paused);
+    if (navActive && !v.navActive) { say(held ? "nav_hold" : "nav_scan"); v.navHeld = held; }
+    else if (navActive && v.navHeld && !held) { say("nav_scan"); v.navHeld = false; }
+    v.navActive = navActive;
+    const navFix = !!(nav && nav.est_au);
+    if (navFix && !v.navFix) say("nav_fix");
+    v.navFix = navFix;
+
     // how good the lock is, once it has settled
     if (v.accDue && now >= v.accDue && st === "LOCK") {
       v.accDue = null;
@@ -165,7 +199,7 @@ const Voice = (() => {
       const r = tr.rate_dps || 0;
       if (r !== v.rateSeen) { v.rateSeen = r; v.rateAt = now; }
       const b = bucket(RATE_BUCKETS, r);
-      if (b !== v.rateBucket && now - v.rateAt > RATE_SETTLE_MS) { v.rateBucket = b; say("rate_" + b); }
+      if (b !== v.rateBucket && now - v.rateAt > RATE_SETTLE_MS && now >= v.rateQuietUntil) { v.rateBucket = b; say("rate_" + b); }
       if (!!tr.glare !== v.glare) { v.glare = !!tr.glare; say(v.glare ? "glare_on" : "glare_off"); }
     }
   }

@@ -1,13 +1,23 @@
 # Lost in Space — TODO
 
-Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goes to main.
+Status as of 2026-11-08. Rule: work on a branch, a human reviews it, then it goes to main.
+
+## Judge QA fixes (2026-11-08, see `docs/qa/judge-review-2026-11-08.md`, scored 6.3/10)
+- [x] **Knob dead in `--nav` mode:** scan pauses while spinning; WHERE AM I? button (virtual console) runs one sweep on demand; recovery back on in nav mode
+- [ ] **Put the CNN on screen:** `--starnet` in the demo if it holds 2-5 Hz, classical/CNN toggle, real numbers in the SOLVE RATE panel (no "pending")
+- [ ] Prepare the answer for StarNet's Stellarium result (38% vs tuned tetra3 100%)
+- [ ] Voice / glare from perception: callouts from solver state, not sim truth; glare that visibly drops confidence
+- [ ] Solver without truth: measured rate for detumble, calibrated FOV instead of the truth packet's
+- [ ] Drop `--flare-moves` teleport: keep the position through a flare, show the re-fix agreeing
+- [ ] Polish: POSITION title clipped at 1600x900, planet label overlap, console panel blank on load, caption for the ~6 s lock
+- [ ] `fake_demo.sh` pkill hits other worktrees' demos: scope it to this checkout
 
 ## Planning & data
 - [x] Plan (`plan.md`) and feasibility review (`feasibility-review.md`)
 - [x] Star catalogue, constellation lines, star names (`data/`)
 - [x] tetra3 database built (`data/tetra3_wide.npz`, 30–70° FOV, mag ≤ 5.5)
 - [x] Wiring guide + diagram (`docs/WIRING.md`)
-- [ ] Download DE421 ephemeris (`de421.bsp`) before venue Wi-Fi dies
+- [ ] Download DE421 ephemeris (`de421.bsp`) before venue Wi-Fi dies: `.venv/bin/python -c "from skyfield.api import Loader; Loader('data')('de421.bsp')"` (needed by `--planets` / `--nav`)
 - [ ] Confirm hackathon rules on AI-assisted coding / disclosure
 - [ ] Confirm judging time + Devpost deadline
 
@@ -17,7 +27,7 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [x] Calibration checkerboard mode
 - [x] Truth on UDP 5005, commands on UDP 5006
 - [x] Verified: tetra3 solves 15/15 static frames (~70″)
-- [ ] Planets / Sun / Moon from DE421
+- [x] Planets / Moon from DE421: `sim.live --planets` (hidden position; the Sun is not drawn)
 
 ## Camera + solve (`camera/`)
 - [x] Capture with exposure/focus locking attempts
@@ -57,7 +67,7 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [ ] Test on the demo laptop with the real camera feed
 
 ## Stretch
-- [ ] Position from 3+ planets with error ellipsoid
+- [x] Position from 3+ planets with error ellipsoid: `demo/fake_demo.sh --nav` (live, dashboard POSITION panel); offline benchmark `camera/navigate.py --bench` (~10,000 km clean, ~23,000 km through the fake webcam)
 - [ ] Earth mode: accelerometer + time → lat/long
 - [ ] Stellarium as an independent sky source
 

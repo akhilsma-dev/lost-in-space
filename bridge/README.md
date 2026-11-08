@@ -19,7 +19,10 @@ drives STATUS / ATT / SERVO. `--no-web` = keyboard only.
 `python -m bridge.serial_bridge --fake --web` serves the console as a web page on http://localhost:8081
 (`bridge/webconsole.py`, `bridge/static/console.html`). The bridge talks to it with the same serial lines
 as the real board, and the page copies the firmware's behaviour: OLED layout (LOCK / SEARCH / LOST /
-NO LINK / FLARE!, RA/Dec/Roll, tumble), the lock LED, the buzzer chirp and alarm (WebAudio; the first
+NO LINK / FLARE!, RA/Dec/Roll, tumble), plus the acquisition stage while not locked (`STAGE` line: e.g.
+`VERIFYING 3/6` with a progress bar, `DETUMBLING 12.0`, `SEARCH SLEW`), a WHERE AM I? button in planet-nav
+mode (`fake_demo.sh --nav`: sends `BTN NAV`, the bridge asks the solver for one planet scan sweep; it shows the
+scan state from `NAV` lines; sim only, the real board has no such button), the lock LED, the buzzer chirp and alarm (WebAudio; the first
 click switches sound on, the speaker icon mutes), the servo slew limit of 60 °/s and the 3 s NO LINK
 timeout. Controls: drag the knob up/down (also mouse wheel or arrow keys; double-click = 0), click FLARE
 or press Space.

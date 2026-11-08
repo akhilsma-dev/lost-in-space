@@ -30,6 +30,12 @@
    "text": "Pointing error under sixty arc seconds.",
    "voice": "pNInz6obpgDQGcFmaJgB"
   },
+  "detumble": {
+   "engine": "elevenlabs",
+   "file": "detumble.mp3",
+   "text": "Spinning too fast to acquire. Detumbling.",
+   "voice": "pNInz6obpgDQGcFmaJgB"
+  },
   "flare": {
    "engine": "elevenlabs",
    "file": "flare.mp3",
@@ -64,6 +70,24 @@
    "engine": "elevenlabs",
    "file": "lost.mp3",
    "text": "Star tracker has lost lock.",
+   "voice": "pNInz6obpgDQGcFmaJgB"
+  },
+  "nav_fix": {
+   "engine": "elevenlabs",
+   "file": "nav_fix.mp3",
+   "text": "Position fixed from the planets.",
+   "voice": "pNInz6obpgDQGcFmaJgB"
+  },
+  "nav_hold": {
+   "engine": "elevenlabs",
+   "file": "nav_hold.mp3",
+   "text": "Hold still for navigation.",
+   "voice": "pNInz6obpgDQGcFmaJgB"
+  },
+  "nav_scan": {
+   "engine": "elevenlabs",
+   "file": "nav_scan.mp3",
+   "text": "Scanning for planets.",
    "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "no_signal": {
@@ -184,6 +208,12 @@
    "engine": "elevenlabs",
    "file": "unstable.mp3",
    "text": "Lock unstable.",
+   "voice": "pNInz6obpgDQGcFmaJgB"
+  },
+  "verifying": {
+   "engine": "elevenlabs",
+   "file": "verifying.mp3",
+   "text": "Star pattern found. Verifying.",
    "voice": "pNInz6obpgDQGcFmaJgB"
   }
  }

@@ -21,13 +21,15 @@ function run(name, steps, expect) {
   const V = fn(...Object.values(ctx));
   // inject clips the way load() would
   const ids = ["online", "lock_first", "lock_again", "lost", "search", "flare", "unstable", "glare_on", "glare_off",
-    "no_signal", "signal_back", ...[...Array(10)].map((_, i) => "relock_" + (i + 1)),
+    "no_signal", "signal_back", "verifying", "detumble", "nav_scan", "nav_hold", "nav_fix", ...[...Array(10)].map((_, i) => "relock_" + (i + 1)),
     ...[0, 5, 10, 15, 20].map((r) => "rate_" + r), ...[5, 10, 20, 30, 60].map((a) => "acc_" + a)];
   const clips = Object.fromEntries(ids.map((i) => [i, { file: i + ".mp3", text: i }]));
   V._test_load(clips, ctx.Audio);
 
   const snap = (state, extra = {}) => ({ state, truth: { rate_dps: extra.rate ?? 0, glare: false, flash: extra.flash ?? 0 },
-    err: { point: 8 }, stats: {} });
+    est: { status: state, stage: extra.stage ?? state }, err: { point: 8 }, stats: {},
+    nav: extra.nav ? { scan: { mode: "button", active: !!extra.nav.active, paused: !!extra.nav.paused, step: 1, n: 8 },
+                       ...(extra.nav.fix ? { est_au: [1, 0, 0] } : {}) } : null });
   for (const [dur, state, extra] of steps) {
     for (let t = 0; t < dur; t += 66) {
       V.update(snap(state, extra));
@@ -37,7 +39,8 @@ function run(name, steps, expect) {
   }
   const said = V.history.map((h) => h[1]);
   if (expect.relocks) { const n = said.filter((x) => /^relock_/.test(x)).length; console.log(`${n >= expect.relocks ? "PASS" : "FAIL"}  ${name} (${n} relocks)\n      said: ${said.join(", ")}`); return n >= expect.relocks; }
-  const ok = expect.every((e) => said.some((s) => (e instanceof RegExp ? e.test(s) : s === e)));
+  const ok = expect.every((e) => said.some((s) => (e instanceof RegExp ? e.test(s) : s === e)))
+    && !(expect.not || []).some((e) => said.includes(e));
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}\n      said: ${said.join(", ")}`);
   return ok;
 }
@@ -62,4 +65,27 @@ all &= run("three flares", [[3000, "LOCK"],
   [1500, "LOST", { flash: 255 }], [3000, "LOCK"],
   [1500, "LOST", { flash: 255 }], [3000, "LOCK"],
   [1500, "LOST", { flash: 255 }], [3000, "LOCK"]], { relocks: 3, every: () => true });
+// 5. recovery: detumble from 15 deg/s (stabilized), then a search slew (announced, rate burst not read out)
+const ramp = [];
+for (let r = 15; r > 0; r -= 1) ramp.push([250, "SEARCH", { rate: r, stage: "DETUMBLING " + r }]);
+all &= run("detumble then search slew", [[3000, "LOCK", { rate: 15 }], [4000, "SEARCH", { rate: 15, stage: "RATE HIGH 15" }],
+  ...ramp, [9000, "SEARCH", { stage: "MATCHING" }], [3000, "SEARCH", { rate: 6, stage: "SEARCH SLEW" }],
+  [4000, "SEARCH", { stage: "MATCHING" }]],
+  Object.assign(["rate_0", "search"], { not: ["rate_5", "rate_10"] }));
+// 6. flare -> "verifying" on the first candidate, then the relock
+all &= run("flare, verifying, relock", [[3000, "LOCK"], [1500, "LOST", { flash: 255, stage: "DETECTING 0" }],
+  [1000, "SEARCH", { stage: "VERIFYING 1/6" }], [4000, "SEARCH", { stage: "VERIFYING 3/6" }], [4000, "LOCK"]],
+  Object.assign(["flare", "verifying", /^relock_\d+$/], { not: ["lost"] }));
+// 7. flare at high tumble: detumble announced once
+const ramp2 = [];
+for (let r = 20; r > 0; r -= 2) ramp2.push([500, "SEARCH", { rate: r, stage: "DETUMBLING " + r }]);
+all &= run("detumble announced once", [[3000, "LOCK", { rate: 20 }], [1500, "LOST", { flash: 255, rate: 20 }],
+  [3000, "SEARCH", { rate: 20, stage: "RATE HIGH 20.0" }], ...ramp2, [6000, "SEARCH", { stage: "VERIFYING 2/6" }], [4000, "LOCK"]],
+  ["flare", "detumble", "rate_0"]);
+// 8. WHERE AM I? pressed while spinning: hold, then scanning once still, then the fix
+all &= run("where am I: hold, scan, fix", [[3000, "LOCK", { rate: 10, nav: {} }],
+  [4000, "LOCK", { rate: 10, nav: { active: true, paused: true } }],
+  [8000, "LOCK", { nav: { active: true } }], [8000, "LOCK", { nav: { active: true, fix: true } }],
+  [4000, "LOCK", { nav: { fix: true } }]],
+  ["nav_hold", "nav_scan", "nav_fix"]);
 process.exitCode = all ? 0 : 1;
