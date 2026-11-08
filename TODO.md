@@ -71,6 +71,15 @@ Status as of 2026-11-08. Rule: work on a branch, a human reviews it, then it goe
 - [ ] Earth mode: accelerometer + time → lat/long
 - [ ] Stellarium as an independent sky source
 
+## To add if time: getting from A to B
+- [ ] **Point at a target (attitude A → B):** a console/dashboard target picker (a named star, Earth, a planet).
+      The craft slews there with the sim's `slew` command and the star tracker confirms arrival (pointing error
+      shrinking to arcseconds). This is what an operator really commands; it reuses the WHERE AM I? slews.
+- [ ] **Travel (position A → B), time-lapse:** show an orbit transfer the way missions fly it: point the engine
+      (needs attitude), burn (delta-v), coast on the new orbit, burn again (a Hohmann transfer, e.g. Earth → Mars),
+      with WHERE AM I? fixes along the way to correct course. Needs a sped-up clock in sim.live and a trajectory
+      on the POSITION map. Bigger job; judges can't try it at the table, so lower priority than pointing.
+
 ## Demo & pitch
 - [ ] Full end-to-end dry run: sim → camera → solve → dashboard + console
 - [ ] Record backup video
