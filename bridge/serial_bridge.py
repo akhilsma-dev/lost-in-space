@@ -23,6 +23,7 @@ Usage:
   python -m bridge.serial_bridge                 # auto-detect /dev/cu.usbserial-* / usbmodem*
   python -m bridge.serial_bridge --port /dev/cu.usbserial-1410
   python -m bridge.serial_bridge --fake          # no hardware: keyboard plays the board
+  python -m bridge.serial_bridge --fake --web    # no hardware: virtual console page on :8081 (+ keyboard)
   python -m bridge.serial_bridge --fake --truth-demo   # also feed sim truth (UDP 5005) back as a fake LOCK
 
 Fake-mode keys (type then Enter):
@@ -156,27 +157,32 @@ class SerialBoard:
 class FakeBoard:
     """Keyboard pretends to be the board; prints what the board would receive."""
 
-    def __init__(self, rx, verbose=False):
+    def __init__(self, rx, verbose=False, keyboard=True):
         self.rx, self.verbose = rx, verbose
         self.knob = 0
         self.last_print = {}
         self.status = None
-        self.rx.put("HELLO console 1 (fake)")
-        self.rx.put("KNOB 0")
-        threading.Thread(target=self._run, daemon=True, name="keyboard").start()
+        self.emit("HELLO console 1 (fake)")
+        self.emit("KNOB 0")
+        if keyboard:
+            threading.Thread(target=self._run, daemon=True, name="keyboard").start()
+
+    def emit(self, line):
+        """A line the board sends to the laptop."""
+        self.rx.put(line)
 
     def _run(self):
         log("[fake] keys: f/Enter=FLARE  <0-1023>=knob  +/-=knob +-100  0=stop  q=quit")
         for raw in sys.stdin:
             s = raw.strip().lower()
             if s in ("", "f", "flare"):
-                self.rx.put("BTN FLARE")
+                self.emit("BTN FLARE")
             elif s in ("+", "-"):
                 self.knob = max(0, min(1023, self.knob + (100 if s == "+" else -100)))
-                self.rx.put(f"KNOB {self.knob}")
+                self.emit(f"KNOB {self.knob}")
             elif s.lstrip("k ").isdigit():
                 self.knob = max(0, min(1023, int(s.lstrip("k "))))
-                self.rx.put(f"KNOB {self.knob}")
+                self.emit(f"KNOB {self.knob}")
             elif s in ("q", "quit", "exit"):
                 break
             else:
@@ -353,6 +359,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", help="serial port (default: auto-detect)")
     ap.add_argument("--fake", action="store_true", help="simulate the board from the keyboard")
+    ap.add_argument("--web", nargs="?", type=int, const=8081, default=None, metavar="PORT",
+                    help="with --fake: serve the virtual console page (default port 8081; see bridge/webconsole.py)")
+    ap.add_argument("--web-host", default="127.0.0.1", help="interface for --web (0.0.0.0 = reachable from a phone)")
     ap.add_argument("--sim-port", type=int, default=5006, help="sim command port")
     ap.add_argument("--solver-port", type=int, default=5007, help="UDP port for solver status JSON")
     ap.add_argument("--max-rate", type=float, default=20.0, help="tumble rate at full knob, deg/s")
@@ -369,7 +378,15 @@ def main():
     args = ap.parse_args()
 
     rx = queue.Queue()
-    board = FakeBoard(rx, args.verbose) if args.fake else SerialBoard(args.port, rx)
+    if args.web is not None and not args.fake:
+        ap.error("--web needs --fake (the virtual console replaces the board)")
+    if args.web is not None:
+        from bridge.webconsole import WebBoard
+        board = WebBoard(rx, args.web, args.web_host, args.verbose, keyboard=sys.stdin.isatty())
+    elif args.fake:
+        board = FakeBoard(rx, args.verbose)
+    else:
+        board = SerialBoard(args.port, rx)
     bridge = Bridge(args, board, rx)
     udp_json_listener(args.solver_port, bridge.on_solver)
     log(f"[bridge] solver JSON on udp:{args.solver_port}, sim commands -> udp:{args.sim_port}")

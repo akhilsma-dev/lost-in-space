@@ -7,6 +7,7 @@ errors / lock state / overlays, and serves a full-screen browser page on http://
   .venv/bin/python -m dashboard --mock          synthesise both feeds (nothing else needed)
   .venv/bin/python -m dashboard --mock-est      truth from a running sim.live, estimates synthesised
   add --open to launch the page full screen (Chrome kiosk if installed, else default browser)
+  add --console-url http://localhost:8081/ to show the virtual console (no-board demo) in a panel
 
 Stdlib HTTP + Server-Sent Events; only numpy / scipy / opencv from the existing venv.
 """
@@ -312,7 +313,7 @@ def _json_default(o):
 
 
 # ---------------------------------------------------------------- HTTP
-def make_handler(hub):
+def make_handler(hub, config):
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -336,6 +337,8 @@ def make_handler(hub):
             if path == "/state":
                 with hub.cond:
                     return self._send(200, hub.snapshot.encode(), "application/json")
+            if path == "/config":
+                return self._send(200, json.dumps(config).encode(), "application/json")
             if path == "/frame.jpg":
                 j = hub.frames.jpeg
                 return self._send(200, j, "image/jpeg") if j else self._send(404, b"", "text/plain")
@@ -396,6 +399,9 @@ def main():
     ap.add_argument("--solve-rate", default=str(HERE / "solve_rate.json"),
                     help="JSON with the tetra3-alone vs tetra3+CNN result (see solve_rate.example.json)")
     ap.add_argument("--open", action="store_true", help="open the page full screen")
+    ap.add_argument("--console-url", default=None,
+                    help="show the virtual console (bridge.serial_bridge --fake --web) in a panel, "
+                         "e.g. http://localhost:8081/")
     a = ap.parse_args()
 
     if a.mock:
@@ -416,7 +422,7 @@ def main():
 
     hub = Hub(truth, est, a.solve_rate, label)
     hub.start()
-    srv = Server(("127.0.0.1", a.port), make_handler(hub))
+    srv = Server(("127.0.0.1", a.port), make_handler(hub, {"console_url": a.console_url}))
     url = f"http://localhost:{a.port}/"
     print(f"[dashboard] {label}: {url}  (truth UDP {a.truth_port}, estimates UDP {a.est_port})")
     if a.open:

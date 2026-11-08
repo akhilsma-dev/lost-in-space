@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # One-command demo with no camera: sim.live -> solve_live --follow-sim -> dashboard + console bridge.
 #
-#   demo/fake_demo.sh            keyboard plays the console (f = flare, 0-1023 = tumble knob, q = quit)
+#   demo/fake_demo.sh            virtual console (web page, also in the dashboard) + keyboard play the board
+#                                (keyboard: f = flare, 0-1023 = tumble knob, q = quit)
+#   demo/fake_demo.sh --no-web   keyboard only, no virtual console page
 #   demo/fake_demo.sh --board    real Arduino console on USB instead of the keyboard
 #   demo/fake_demo.sh --classic  plain tetra3 blob filter (loses lock near 5 deg/s; default keeps blur streaks)
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
 #
-# Dashboard: http://localhost:8080   Logs: $LOG_DIR (default: a temp folder, printed at start)
+# Dashboard: http://localhost:8080   Virtual console: http://localhost:8081   Logs: $LOG_DIR (default: a temp folder, printed at start)
 # Ctrl+C (or q in keyboard mode) stops everything.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -17,7 +19,7 @@ if [[ -z "$PY" ]]; then
   if [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python; fi
 fi
 
-BOARD=0 TUNED=1 FULL=0 OPEN=0
+BOARD=0 TUNED=1 FULL=0 OPEN=0 WEB=1
 for arg in "$@"; do
   case "$arg" in
     --board) BOARD=1 ;;
@@ -25,7 +27,8 @@ for arg in "$@"; do
     --classic) TUNED=0 ;;
     --full)  FULL=1 ;;
     --open)  OPEN=1 ;;
-    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    --no-web) WEB=0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg (see --help)"; exit 1 ;;
   esac
 done
@@ -52,7 +55,9 @@ SIM_ARGS=(); [[ $FULL == 0 ]] && SIM_ARGS+=(--window)
 "$PY" -u -m sim.live ${SIM_ARGS[@]+"${SIM_ARGS[@]}"} > "$LOG_DIR/sim.log" 2>&1 &
 PIDS+=($!)
 
+CONSOLE_URL=http://localhost:8081/
 DASH_ARGS=(); [[ $OPEN == 1 ]] && DASH_ARGS+=(--open)
+[[ $BOARD == 0 && $WEB == 1 ]] && DASH_ARGS+=(--console-url "$CONSOLE_URL")
 "$PY" -u -m dashboard ${DASH_ARGS[@]+"${DASH_ARGS[@]}"} > "$LOG_DIR/dashboard.log" 2>&1 &
 PIDS+=($!)
 
@@ -73,6 +78,11 @@ if [[ $BOARD == 1 ]]; then
   echo "[demo] console: real board over USB"
   "$PY" -u -m bridge.serial_bridge
 else
-  echo "[demo] console: keyboard. Type then Enter:  f = solar flare   0-1023 = tumble knob   +/- = knob +-100   q = quit"
-  "$PY" -u -m bridge.serial_bridge --fake
+  BRIDGE_ARGS=(--fake)
+  if [[ $WEB == 1 ]]; then
+    BRIDGE_ARGS+=(--web 8081)
+    echo "[demo] console: virtual board at $CONSOLE_URL (also inside the dashboard)"
+  fi
+  echo "[demo] keyboard also works. Type then Enter:  f = solar flare   0-1023 = tumble knob   +/- = knob +-100   q = quit"
+  "$PY" -u -m bridge.serial_bridge "${BRIDGE_ARGS[@]}"
 fi

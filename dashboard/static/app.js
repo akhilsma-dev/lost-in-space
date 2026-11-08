@@ -343,5 +343,16 @@ document.addEventListener("keydown", (e) => {
   }
 });
 document.addEventListener("fullscreenchange", () => document.body.classList.toggle("fs", !!document.fullscreenElement));
+function loadConfig() {
+  fetch("/config").then((r) => r.json()).then((c) => {
+    if (!c.console_url) return;
+    const u = new URL(c.console_url, location.href);
+    u.searchParams.set("embed", "1");
+    $("consoleFrame").src = u.href;
+    $("consolePanel").hidden = false;
+    document.body.classList.add("with-console");
+  }).catch(() => {});
+}
+loadConfig();
 connect();
 requestAnimationFrame(frameLoop);
