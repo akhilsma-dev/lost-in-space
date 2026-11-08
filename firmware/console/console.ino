@@ -10,6 +10,7 @@
 #include <Arduino.h>
 #include <Servo.h>
 #include <U8x8lib.h>
+#include <Wire.h>
 
 // ---------------------------------------------------------------- pins
 const uint8_t PIN_BTN = 6;
@@ -225,6 +226,16 @@ char shownText[TEXT_ROWS][COLS + 1];
 int8_t oledRow = -1;   // next row to check/send, -1 = idle
 uint32_t lastDrawMs = 0;
 
+// If an I2C transfer timed out, the display is unreachable: report it once and stop drawing,
+// so every loop() pass doesn't pay the timeout again.
+bool oledOk = true;
+void checkOled() {
+  if (oledOk && Wire.getWireTimeoutFlag()) {
+    oledOk = false;
+    Serial.println(F("ERR oled i2c timeout; display off"));
+  }
+}
+
 // Copy s into a space-padded fixed-width row (clears leftovers from the previous frame).
 void setRow(char *dst, uint8_t width, const char *s, uint8_t col = 0) {
   memset(dst, ' ', width);
@@ -255,6 +266,8 @@ void render(uint32_t now) {
 }
 
 void updateOled(uint32_t now) {
+  checkOled();
+  if (!oledOk) return;
   // At most one changed row goes out per loop() pass; unchanged rows are skipped.
   while (oledRow >= 0) {
     if (oledRow < TEXT_ROW0) {
@@ -295,15 +308,23 @@ void setup() {
   pinMode(PIN_BUZZ, OUTPUT);
   digitalWrite(PIN_LED, LOW);
 
-  u8x8.setBusClock(400000);
-  u8x8.begin();
-  u8x8.setFont(u8x8_font_chroma48medium8_r);
-  u8x8.clearDisplay();
+  // Greet and start the servos before touching the OLED, so a display problem can never
+  // stop the link to the laptop.
+  Serial.println(F("HELLO console 1 fw4"));   // protocol 1; "fw4" = build, to confirm an upload took
   pan.begin(PIN_PAN, 90, PAN_MIN, PAN_MAX);
   tilt.begin(PIN_TILT, 90, TILT_MIN, TILT_MAX);
   lastServoMs = millis();
 
-  Serial.println(F("HELLO console 1 fw3"));   // protocol 1; "fw3" = build, to confirm an upload took
+  // Stock AVR Wire waits forever if the I2C bus is stuck; give it a 5 ms timeout instead.
+  Wire.begin();
+  Wire.setWireTimeout(5000, true);
+  Wire.clearWireTimeoutFlag();
+  u8x8.setBusClock(400000);
+  u8x8.begin();
+  Wire.setWireTimeout(5000, true);
+  u8x8.setFont(u8x8_font_chroma48medium8_r);
+  u8x8.clearDisplay();
+  checkOled();
   updateKnob(millis());
   sendKnob(millis());
 }
