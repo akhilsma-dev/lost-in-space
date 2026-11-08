@@ -10,7 +10,7 @@
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
 #   demo/fake_demo.sh --nav      position from planets: hidden position + planets on screen; WHERE AM I? on the
-#                                virtual console scans 8 ecliptic pointings (3 s each, paused while spinning) and
+#                                virtual console slews through 8 ecliptic pointings (20 deg/s, 2 s look each; paused while spinning) and
 #                                fixes the position (dashboard POSITION panel); with --board it scans continuously;
 #                                a flare also moves the spacecraft, so the position is found again after it
 #
@@ -76,7 +76,7 @@ else SOLVER_NAME=classical; fi
 # planet nav: with the virtual console the scan runs when WHERE AM I? is pressed; a real board has no
 # such button, so there it scans continuously (both pause while the craft spins)
 if [[ $NAV == 1 ]]; then
-  SOLVE_ARGS+=(--nav --nav-scan 3 --nav-reset-on-blind); SOLVER_NAME="$SOLVER_NAME + planet nav"
+  SOLVE_ARGS+=(--nav --nav-scan 2 --nav-reset-on-blind); SOLVER_NAME="$SOLVER_NAME + planet nav"
   [[ $BOARD == 0 && $WEB == 1 ]] && SOLVE_ARGS+=(--nav-scan-mode button)
 fi
 "$PY" -u -m camera.solve_live "${SOLVE_ARGS[@]}" > "$LOG_DIR/solve.log" 2>&1 &

@@ -388,7 +388,7 @@ class Hub(threading.Thread):
                 "est": {"ok": es is not None, "hz": self.est.hz(), "age": _age(self.est), "error": self.est.error,
                         "mock": bool((es or {}).get("mock"))},
             },
-            "truth": (tr or paired) and {k: (tr or paired).get(k) for k in ("ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "flash", "mode", "w", "h", "frame")},
+            "truth": (tr or paired) and {k: (tr or paired).get(k) for k in ("ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "flash", "mode", "w", "h", "frame", "slewing")},
             "paired": paired and {k: paired.get(k) for k in ("ra", "dec", "roll")},
             "est": es and {k: es.get(k) for k in ("ra", "dec", "roll", "fov", "status", "stage", "confidence", "matches",
                                                   "prob", "rmse", "solve_ms", "n_centroids", "frontend")},

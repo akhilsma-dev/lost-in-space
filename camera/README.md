@@ -294,6 +294,10 @@ demo/fake_demo.sh --nav        # everything, no camera; dashboard POSITION panel
     A full scan takes 24 s. Steps are only taken while LOCKed and while the spin measured from the solves
     is below `--nav-scan-max-rate` (0.5 deg/s): `point` stops the sim's tumble, so scanning while the console
     knob spins the craft used to cancel the knob within 3 s.
+  - Scan steps are smooth `slew`s (sim.live command: turn to an attitude at a set rate, then hold) at
+    `--nav-slew-rate` (20 deg/s), tracked all the way; the `--nav-scan` dwell (2 s in `fake_demo.sh --nav`)
+    starts on arrival. A sweep starts at the scan pointing nearest the current view; a full sweep takes about
+    35-40 s. `--nav-slew-rate 0` uses `point` teleports instead. A flare during a sweep restarts it.
   - `--nav-scan-mode button` (what `fake_demo.sh --nav` uses with the virtual console): no automatic scan.
     WHERE AM I? on the console sends `whereami` (bridge → UDP 5011, `--nav-cmd-port`); the solver forgets
     old sightings and runs one 8-pointing sweep. Sightings are kept until the next press (or a flare with

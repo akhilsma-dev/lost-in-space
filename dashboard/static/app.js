@@ -230,6 +230,7 @@ function drawView() {
     r = drawSky(ctx, 0, 0, W, H, v.has_frame ? frame.img : null, v, v.overlay, v.overlay && [v.w / 2, v.h / 2]);
   }
   const { ox, oy } = r;
+  if (cam || v.has_frame) drawCraftInset(ctx, r);
 
   // status overlays
   const stale = performance.now() - lastMsg > 2500;
@@ -281,8 +282,13 @@ const BODY = (() => {
 function drawAtt3d(t) {
   const [ctx, W, H] = fit($("att3d"));
   ctx.clearRect(0, 0, W, H);
-  const R = Math.min(W, H) * 0.42, cx = W / 2, cy = H / 2 + 4;
-  const az = t * 0.00008, el = 0.38;   // slow orbit of the viewpoint
+  drawCraftScene(ctx, W / 2, H / 2 + 4, Math.min(W, H) * 0.42, t * 0.00008, { labels: true, note: [8, H - 10] });   // slow orbit
+}
+
+// The spacecraft (estimate solid, hidden truth dashed) inside the celestial sphere, orthographic, viewed from
+// azimuth az. Used by the 3D panel and by the small SPACECRAFT inset on the camera view.
+function drawCraftScene(ctx, cx, cy, R, az, opts = {}) {
+  const el = 0.38;
   const ca = Math.cos(az), sa = Math.sin(az), ce = Math.cos(el), se = Math.sin(el);
   const P = (v) => {   // inertial -> screen (orthographic), returns [x, y, depth]
     const x = ca * v[0] + sa * v[1], y = -sa * v[0] + ca * v[1], z = v[2];
@@ -304,9 +310,11 @@ function drawAtt3d(t) {
   ring((a) => [Math.cos(a), Math.sin(a), 0]);
   ring((a) => [Math.cos(a), 0, Math.sin(a)]);
   ring((a) => [0, Math.cos(a), Math.sin(a)]);
-  ctx.fillStyle = C.dim; ctx.font = "600 11px -apple-system, Helvetica, Arial"; ctx.textAlign = "center";
-  const np = P([0, 0, 1.08]); ctx.fillText("NCP", np[0], np[1]);
-  const vx = P([1.1, 0, 0]); ctx.fillText("♈︎ RA 0°", vx[0], vx[1]);
+  if (opts.labels) {
+    ctx.fillStyle = C.dim; ctx.font = "600 11px -apple-system, Helvetica, Arial"; ctx.textAlign = "center";
+    const np = P([0, 0, 1.08]); ctx.fillText("NCP", np[0], np[1]);
+    const vx = P([1.1, 0, 0]); ctx.fillText("♈︎ RA 0°", vx[0], vx[1]);
+  }
 
   const drawCraft = (M, style) => {
     const S3 = 0.62;
@@ -331,9 +339,30 @@ function drawAtt3d(t) {
   const a = S.att;
   if (a.truth) drawCraft(a.truth, { bus: C.truth, panel: C.truth, bore: C.truth, up: C.truth, lw: 1, dash: [4, 4], alpha: 0.55, dot: 9, fillDot: false });
   if (a.est) drawCraft(a.est, { bus: C.lock, panel: "#5aa8ff", bore: C.lock, up: "rgba(60,230,122,.5)", lw: 1.6, dash: [], alpha: 1, dot: 4.5, fillDot: true });
-  if (!a.truth && !a.est) bigText(ctx, W, H, "NO ATTITUDE", "", C.nosig, 22);
+  if (!opts.note) return;
+  if (!a.truth && !a.est) { ctx.fillStyle = C.nosig; ctx.font = "800 18px -apple-system, Helvetica, Arial"; ctx.textAlign = "center"; ctx.fillText("NO ATTITUDE", cx, cy); }
   else if (!a.est) { ctx.fillStyle = S.state === "LOST" ? C.lost : C.search; ctx.font = "700 13px -apple-system, Helvetica, Arial";
-    ctx.textAlign = "left"; ctx.fillText("no estimate — " + S.state.toLowerCase(), 8, H - 10); }
+    ctx.textAlign = "left"; ctx.fillText("no estimate — " + S.state.toLowerCase(), opts.note[0], opts.note[1]); }
+}
+
+// Small SPACECRAFT inset in the camera view's bottom-left: how the craft is turning (tumble, detumble,
+// WHERE AM I? scan). Fixed viewpoint, so all motion is the spacecraft's own. Solid = what the tracker
+// believes (only while locked), dashed = the hidden truth.
+function drawCraftInset(ctx, r) {
+  if (!S || !S.att || (!S.att.truth && !S.att.est)) return;
+  const sz = Math.round(Math.max(140, Math.min(r.dw, r.dh) * 0.34)), x = r.ox + 10, y = r.oy + r.dh - sz - 30;
+  ctx.fillStyle = "rgba(4,7,13,.94)"; ctx.fillRect(x - 3, y - 3, sz + 6, sz + 28);
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, sz, sz); ctx.clip();
+  drawCraftScene(ctx, x + sz / 2, y + sz / 2, sz * 0.44, 0.65);
+  ctx.restore();
+  ctx.strokeStyle = C.edge; ctx.lineWidth = 1; ctx.strokeRect(x - 0.5, y - 0.5, sz + 1, sz + 1);
+  const tr = S.truth, rate = tr && tr.rate_dps;
+  ctx.font = "700 11px -apple-system, Helvetica, Arial"; ctx.textBaseline = "top";
+  ctx.textAlign = "left"; ctx.fillStyle = S.att.est ? C.lock : S.state === "LOST" ? C.lost : C.search;
+  ctx.fillText(S.att.est ? "SPACECRAFT" : S.state === "LOST" ? "SPACECRAFT · LOST" : "SPACECRAFT · SEARCHING", x + 2, y + sz + 6);
+  if (tr && tr.slewing) { ctx.textAlign = "right"; ctx.fillStyle = C.con; ctx.fillText("SLEWING", x + sz - 2, y + sz + 6); }
+  else if (rate != null) { ctx.textAlign = "right"; ctx.fillStyle = rate > 0.05 ? C.search : C.dim; ctx.fillText(`${rate.toFixed(1)}°/s`, x + sz - 2, y + sz + 6); }
+  ctx.textBaseline = "alphabetic";
 }
 
 // ---------------------------------------------------------------- history chart

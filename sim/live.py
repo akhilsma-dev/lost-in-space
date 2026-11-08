@@ -31,6 +31,9 @@ Sun is never drawn. Extra truth fields: "pos_km" (hidden heliocentric ICRF posit
 (TDB Julian date), "planets" ([[name, ra, dec, mag], ...] as drawn, so --follow-sim and the
 dashboard can redraw the screen). Extra commands (UDP and keys):
   point <ra> <dec> [roll]   hold this attitude (deg; tumble stops)    pos random | n key: new hidden position
+  slew <ra> <dec> [roll] [deg/s]   turn there smoothly at that rate (default --slew-rate), then hold
+                            (tumble stops; a 'rate', 'point' or flare cancels it). Truth "omega" is the
+                            slew's body rate while turning, "slewing" true; "rate_dps" stays the tumble.
 --flare-moves: a flare also picks a new hidden position (so the navigator has to find it again).
 """
 import argparse
@@ -56,6 +59,7 @@ class Sim:
         self.sky = SkyRenderer(args.width, args.height, args.fov)
         self.calib_img, self.calib_corners = checkerboard(args.width, args.height)
         self.rate_dps = args.rate
+        self.slew, self.omega_now = None, np.zeros(3)   # slew: (target attitude, rad/s) while turning
         self.glare = False
         self.calib = False
         self.paused = False
@@ -81,8 +85,16 @@ class Sim:
     def point(self, ra, dec, roll=0.0):
         from sim.sky import from_radecroll
         self.att = from_radecroll(ra, dec, roll)
-        self.rate_dps = 0.0
+        self.rate_dps, self.slew = 0.0, None
         print(f"[point] RA {ra:.2f} Dec {dec:.2f} Roll {roll:.1f}")
+
+    def start_slew(self, ra, dec, roll=0.0, dps=None):
+        """Turn to (ra, dec, roll) about the shortest axis at dps deg/s, then hold (like reaction wheels)."""
+        from sim.sky import from_radecroll
+        dps = float(dps or self.a.slew_rate)
+        self.slew, self.rate_dps = (from_radecroll(ra, dec, roll), math.radians(max(0.5, dps))), 0.0
+        ang = math.degrees((self.att.inv() * self.slew[0]).magnitude())
+        print(f"[slew] to RA {ra:.2f} Dec {dec:.2f} Roll {roll:.1f}: {ang:.1f} deg at {dps:.1f} deg/s")
 
     # ---- commands (keyboard and UDP share these) ----
     def flare(self, blind=True):
@@ -91,7 +103,7 @@ class Sim:
         loses lock before re-acquiring."""
         if blind and self.a.flash_hold + self.a.flash_fade > 0:
             self.flash_t0 = time.monotonic()
-        self.att = random_attitude(self.rng)
+        self.att, self.slew = random_attitude(self.rng), None
         axis = self.rng.normal(size=3)
         self.axis = axis / np.linalg.norm(axis)
         self.glare_corner = self.rng.choice([0.0, 1.0], 2)
@@ -100,6 +112,7 @@ class Sim:
             self.new_position()   # demo convention: the flare also leaves us somewhere unknown
 
     def set_rate(self, dps):
+        self.slew = None   # the console knob wins over a slew in progress
         self.rate_dps = float(np.clip(dps, 0, 60))
         print(f"[rate] {self.rate_dps:.1f} deg/s")
 
@@ -124,6 +137,12 @@ class Sim:
                 self.point(*(float(v) for v in parts[1:4]))
             except ValueError:
                 print(f"[udp] bad point command: {line!r}")
+        elif cmd == "slew" and len(parts) >= 3:
+            try:
+                v = [float(x) for x in parts[1:5]]
+                self.start_slew(*v[:3], *(v[3:4] or [None]))
+            except ValueError:
+                print(f"[udp] bad slew command: {line!r}")
         elif cmd == "pos" and self.eph is not None:
             self.new_position()
         else:
@@ -132,9 +151,20 @@ class Sim:
     # ---- per-frame ----
     def step(self, dt):
         omega = self.axis * math.radians(self.rate_dps)
-        if not self.paused:
+        if self.slew is not None and not self.paused:
+            target, rate = self.slew
+            rv = (self.att.inv() * target).as_rotvec()   # body-frame rotation still to go
+            ang = float(np.linalg.norm(rv))
+            if ang <= rate * dt:
+                self.att, self.slew, omega = target, None, np.zeros(3)
+                print("[slew] arrived")
+            else:
+                omega = rv / ang * rate
+                self.att = self.att * type(self.att).from_rotvec(omega * dt)
+        elif not self.paused:
             self.att = self.att * type(self.att).from_rotvec(omega * dt)
             self.att = type(self.att).from_quat(self.att.as_quat())  # renormalise
+        self.omega_now = omega   # body rate this frame (rad/s): tumble or slew
         self.flash = self.flash_level()
         if self.calib:
             return self.calib_img
@@ -161,7 +191,8 @@ class Sim:
         ra, dec, roll = to_radecroll(self.att)
         return {"frame": self.frame, "t": time.time(), "ra": ra, "dec": dec, "roll": roll,
                 "fov": self.a.fov, "rate_dps": 0.0 if self.paused else self.rate_dps,
-                "omega": [0.0, 0.0, 0.0] if self.paused else (self.axis * self.rate_dps).tolist(),
+                "omega": [0.0, 0.0, 0.0] if self.paused else np.degrees(self.omega_now).tolist(),
+                "slewing": self.slew is not None,
                 "exposure": self.a.exposure, "glare": self.glare,
                 "glare_corner": [float(v) for v in self.glare_corner],
                 "flash": round(self.flash, 1),
@@ -188,6 +219,7 @@ def main():
     ap.add_argument("--solver-truth-port", type=int, default=5009,
                     help="same truth for camera.solve_live (0 = don't send)")
     ap.add_argument("--cmd-port", type=int, default=5006)
+    ap.add_argument("--slew-rate", type=float, default=15.0, help="default rate for the 'slew' command, deg/s")
     ap.add_argument("--share-frames", action=argparse.BooleanOptionalAction, default=True,
                     help="put each shown frame in shared memory for solve_live --follow-sim (no redraw)")
     ap.add_argument("--planets", action="store_true",

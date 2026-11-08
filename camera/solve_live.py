@@ -663,6 +663,9 @@ def main():
                      help="drive sim.live through 8 ecliptic pointings, this many s each (0 = don't)")
     nav.add_argument("--nav-scan-mode", choices=["auto", "button"], default="auto",
                      help="auto: keep scanning; button: one sweep per 'whereami' on --nav-cmd-port")
+    nav.add_argument("--nav-slew-rate", type=float, default=20.0,
+                     help="deg/s: scan steps are smooth sim 'slew's at this rate, tracked throughout (0 = 'point' "
+                          "teleports). The dwell (--nav-scan s) starts on arrival")
     nav.add_argument("--nav-scan-max-rate", type=float, default=0.5,
                      help="deg/s: no scan step while the measured spin is faster (keeps the knob's tumble)")
     nav.add_argument("--nav-max-rate", type=float, default=2.0,
@@ -717,7 +720,8 @@ def main():
     nav_worker = None
     N_SCAN = 8
     button = a.nav and a.nav_scan > 0 and a.nav_scan_mode == "button"
-    sweep_left, scan_paused = 0, False         # button mode: pointings left in the current sweep
+    sweep_left, scan_paused, scan_base = 0, False, 0   # button mode: pointings left in the sweep, its first one
+    slew_t0, slew_until = 0.0, 0.0             # our own scan slew in progress (until arrival or this deadline)
     nav_in = None
     if button:
         nav_in = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -777,6 +781,8 @@ def main():
                 if blind and a.nav_reset_on_blind and navi is not None and not was_blind:
                     navi.reset()
                     print("[nav] sensor blinded: forgetting sightings, searching for the position again")
+                    if button and sweep_left > 0:   # a sweep in progress starts over (its sightings are gone)
+                        sweep_left, scan_base, slew_until = N_SCAN, scan_i, 0.0
                 was_blind = blind
                 while nav_in is not None:
                     try:
@@ -786,27 +792,46 @@ def main():
                     if cmd == "whereami" and sweep_left == 0:
                         if navi is not None:
                             navi.reset()
-                        sweep_left, scan_i, scan_t = N_SCAN, 0, 0.0
-                        print(f"[nav] WHERE AM I?: sweeping {N_SCAN} pointings along the ecliptic")
-                # a scan step teleports the sim ('point' also stops its tumble), so only take one while
-                # locked (no scanning while lost) and not spinning (the knob's tumble stays)
+                        # start at the scan pointing nearest to where we already look: short first turn
+                        i0 = 0
+                        if solved:
+                            from camera.navigate import ecliptic_scan_radec
+                            from sim.sky import unit
+                            here = unit(msg["ra"], msg["dec"])
+                            i0 = int(np.argmax([unit(*ecliptic_scan_radec(i)[:2]) @ here for i in range(N_SCAN)]))
+                        sweep_left, scan_i, scan_base, scan_t = N_SCAN, i0, i0, 0.0
+                        print(f"[nav] WHERE AM I?: sweeping {N_SCAN} pointings along the ecliptic, from #{i0}")
+                # a scan step turns the craft: a smooth 'slew' at --nav-slew-rate (tracked all the way), or with
+                # --nav-slew-rate 0 a 'point' teleport. Either stops the sim's tumble, so steps are only taken
+                # while locked (no scanning while lost) and not spinning (the knob's tumble stays).
+                now_s = time.time()
                 spin = math.degrees(np.linalg.norm(solver.acq.w))
-                want = a.nav_scan > 0 and (not button or sweep_left > 0)
-                wait = None if not want else "lock" if status != "LOCK" else "spin" if spin > a.nav_scan_max_rate else None
+                if slew_until and (now_s > slew_until or (now_s - slew_t0 > 0.6 and spin <= a.nav_scan_max_rate)):
+                    slew_until, scan_t = 0.0, now_s      # arrived (or gave up waiting): the dwell starts now
+                want = a.nav_scan > 0 and (not button or sweep_left > 0 or slew_until)
+                wait = (None if not want else "slew" if slew_until else "lock" if status != "LOCK"
+                        else "spin" if spin > a.nav_scan_max_rate else None)
                 paused = wait == "spin"
                 if paused != scan_paused:
                     scan_paused = paused
                     print(f"[nav] scan paused: spinning {spin:.1f} deg/s" if paused else "[nav] scan resumed")
-                if want and wait is None and time.time() - scan_t > a.nav_scan:
-                    solver.acq.expect_jump(t)
+                if want and wait is None and (not button or sweep_left > 0) and now_s - scan_t > a.nav_scan:
                     from camera.navigate import ecliptic_scan_radec
                     ra_, dec_, roll_ = ecliptic_scan_radec(scan_i)
-                    out.sendto(f"point {ra_:.4f} {dec_:.4f} {roll_:.3f}".encode(), ("127.0.0.1", a.cmd_port))
-                    scan_i, scan_t = scan_i + 1, time.time()
+                    if a.nav_slew_rate > 0:
+                        turn = Acquisition.angle_deg(from_radecroll(msg["ra"], msg["dec"], msg["roll"]),
+                                                     from_radecroll(ra_, dec_, roll_)) if solved else 90.0
+                        out.sendto(f"slew {ra_:.4f} {dec_:.4f} {roll_:.3f} {a.nav_slew_rate:g}".encode(),
+                                   ("127.0.0.1", a.cmd_port))
+                        slew_t0, slew_until = now_s, now_s + 1.5 * turn / a.nav_slew_rate + 2.0
+                    else:
+                        solver.acq.expect_jump(t)
+                        out.sendto(f"point {ra_:.4f} {dec_:.4f} {roll_:.3f}".encode(), ("127.0.0.1", a.cmd_port))
+                    scan_i, scan_t = scan_i + 1, now_s
                     if button:
                         sweep_left -= 1
-                # the last pointing still needs its dwell before the sweep counts as done
-                active = button and (sweep_left > 0 or (scan_i > 0 and time.time() - scan_t < a.nav_scan))
+                # the last pointing still needs its slew and dwell before the sweep counts as done
+                active = button and (sweep_left > 0 or bool(slew_until) or (scan_i > 0 and now_s - scan_t < a.nav_scan))
                 if status == "LOCK":
                     if navi is None:
                         from camera.navigate import CandidateFinder, LiveNavigator
@@ -828,7 +853,7 @@ def main():
                 msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
                 if a.nav_scan > 0:
                     msg["nav"]["scan"] = {"mode": a.nav_scan_mode, "active": bool(active) if button else True,
-                                          "step": min(scan_i, N_SCAN) if button else scan_i % N_SCAN,
+                                          "step": min(scan_i - scan_base, N_SCAN) if button else scan_i % N_SCAN,
                                           "n": N_SCAN, "paused": scan_paused, "wait": wait}
                 nv = msg["nav"]
                 if time.time() - nav_print > 5:
