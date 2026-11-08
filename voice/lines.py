@@ -26,6 +26,13 @@ def _lines():
         "glare_off": "Glare cleared.",
         "no_signal": "Telemetry lost.",
         "signal_back": "Telemetry restored.",
+        # acquisition / recovery (camera.solve_live stages)
+        "verifying": "Star pattern found. Verifying.",
+        "detumble": "Spinning too fast to acquire. Detumbling.",
+        # position from planets (WHERE AM I? on the console)
+        "nav_scan": "Scanning for planets.",
+        "nav_hold": "Hold still for navigation.",
+        "nav_fix": "Position fixed from the planets.",
     }
     for n in RELOCK_SECONDS:
         L[f"relock_{n}"] = f"Lock reacquired in {WORDS[n]} second{'s' if n != 1 else ''}."
