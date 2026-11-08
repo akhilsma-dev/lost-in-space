@@ -31,6 +31,7 @@ Sun is never drawn. Extra truth fields: "pos_km" (hidden heliocentric ICRF posit
 (TDB Julian date), "planets" ([[name, ra, dec, mag], ...] as drawn, so --follow-sim and the
 dashboard can redraw the screen). Extra commands (UDP and keys):
   point <ra> <dec> [roll]   hold this attitude (deg; tumble stops)    pos random | n key: new hidden position
+--flare-moves: a flare also picks a new hidden position (so the navigator has to find it again).
 """
 import argparse
 import json
@@ -95,6 +96,8 @@ class Sim:
         self.axis = axis / np.linalg.norm(axis)
         self.glare_corner = self.rng.choice([0.0, 1.0], 2)
         print(f"[flare] new hidden attitude; tumble {self.rate_dps:.1f} deg/s")
+        if blind and self.a.flare_moves and self.eph is not None:
+            self.new_position()   # demo convention: the flare also leaves us somewhere unknown
 
     def set_rate(self, dps):
         self.rate_dps = float(np.clip(dps, 0, 60))
@@ -187,6 +190,9 @@ def main():
     ap.add_argument("--cmd-port", type=int, default=5006)
     ap.add_argument("--planets", action="store_true",
                     help="hidden position in the Solar System; draw the planets (needs data/de421.bsp)")
+    ap.add_argument("--flare-moves", action="store_true",
+                    help="--planets: a flare also moves the spacecraft to a new hidden position (demo convention; "
+                         "a real flare only changes attitude)")
     ap.add_argument("--jd", type=float, default=2461352.5, help="--planets: epoch, TDB Julian date (2026-11-08)")
     args = ap.parse_args()
 

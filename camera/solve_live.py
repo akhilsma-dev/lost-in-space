@@ -351,6 +351,9 @@ def main():
                      help="epoch (TDB JD) if the truth packet carries none; sim.live --planets default")
     nav.add_argument("--nav-every", type=float, default=0.5,
                      help="look for planets in at most one locked frame per this many s (planets barely move)")
+    nav.add_argument("--nav-reset-on-blind", action="store_true",
+                     help="forget planet sightings and the fix when the sensor is blinded (whited-out frame, "
+                          "e.g. a flare): pairs with sim.live --flare-moves")
     nav.add_argument("--cmd-port", type=int, default=5006, help="sim.live command port (for --nav-scan)")
     io = ap.add_argument_group("io")
     io.add_argument("--truth-port", type=int, default=TRUTH_PORT)
@@ -375,7 +378,7 @@ def main():
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
     frames = FrameSender(a.frame_port, a.frame_w, a.frame_hz) if a.frame_port else None
-    navi, scan_i, scan_t, nav_print, nav_t = None, 0, 0.0, 0.0, 0.0
+    navi, scan_i, scan_t, nav_print, nav_t, was_blind = None, 0, 0.0, 0.0, 0.0, False
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0}
     shot, shot_lock = None, False
     try:
@@ -404,6 +407,13 @@ def main():
                     msg["err_arcsec"] = round(pointing_error_arcsec(msg["ra"], msg["dec"], truth["ra"], truth["dec"]), 1)
                     msg["roll_err_deg"] = round(roll_error_deg(msg["roll"], truth["roll"]), 3)
             if a.nav:
+                # a whited-out frame (flare) is something the camera itself sees; with --nav-reset-on-blind
+                # we assume it may have left us anywhere and start the position search again
+                blind = float(gray.mean()) > 180.0
+                if blind and a.nav_reset_on_blind and navi is not None and not was_blind:
+                    navi.reset()
+                    print("[nav] sensor blinded: forgetting sightings, searching for the position again")
+                was_blind = blind
                 if a.nav_scan > 0 and time.time() - scan_t > a.nav_scan:   # next scan pointing
                     from camera.navigate import ecliptic_scan_radec
                     ra_, dec_, roll_ = ecliptic_scan_radec(scan_i)

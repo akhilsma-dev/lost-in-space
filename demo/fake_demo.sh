@@ -10,7 +10,8 @@
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
 #   demo/fake_demo.sh --nav      position from planets: hidden position + planets on screen, the solver scans
-#                                8 ecliptic pointings (3 s each) and fixes the position (dashboard POSITION panel)
+#                                8 ecliptic pointings (3 s each) and fixes the position (dashboard POSITION panel);
+#                                a flare also moves the spacecraft, so the position is found again after it
 #
 # Dashboard: http://localhost:8080 (V = voice callouts on/off)   Virtual console: http://localhost:8081   Logs: $LOG_DIR (default: a temp folder, printed at start)
 # Ctrl+C (or q in keyboard mode) stops everything.
@@ -33,7 +34,7 @@ for arg in "$@"; do
     --open)  OPEN=1 ;;
     --no-web) WEB=0 ;;
     --nav)   NAV=1 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg (see --help)"; exit 1 ;;
   esac
 done
@@ -57,7 +58,7 @@ pkill -f -- "[Pp]ython[0-9.]* -u -m (sim\.live|camera\.solve_live|dashboard|brid
 sleep 0.5
 
 SIM_ARGS=(); [[ $FULL == 0 ]] && SIM_ARGS+=(--window)
-[[ $NAV == 1 ]] && SIM_ARGS+=(--planets)
+[[ $NAV == 1 ]] && SIM_ARGS+=(--planets --flare-moves)
 "$PY" -u -m sim.live ${SIM_ARGS[@]+"${SIM_ARGS[@]}"} > "$LOG_DIR/sim.log" 2>&1 &
 PIDS+=($!)
 
@@ -71,7 +72,7 @@ SOLVE_ARGS=(--follow-sim --quiet)
 if [[ $STARNET == 1 ]]; then SOLVE_ARGS+=(--detector starnet); SOLVER_NAME=StarNet
 elif [[ $TUNED == 1 ]]; then SOLVE_ARGS+=(--max-area 5000); SOLVER_NAME=tuned
 else SOLVER_NAME=classical; fi
-[[ $NAV == 1 ]] && SOLVE_ARGS+=(--nav --nav-scan 3) && SOLVER_NAME="$SOLVER_NAME + planet nav"
+[[ $NAV == 1 ]] && SOLVE_ARGS+=(--nav --nav-scan 3 --nav-reset-on-blind) && SOLVER_NAME="$SOLVER_NAME + planet nav"
 "$PY" -u -m camera.solve_live "${SOLVE_ARGS[@]}" > "$LOG_DIR/solve.log" 2>&1 &
 PIDS+=($!)
 

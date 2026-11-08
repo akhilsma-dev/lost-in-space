@@ -246,6 +246,17 @@ demo/fake_demo.sh --nav        # everything, no camera; dashboard POSITION panel
   - Zoom inset: the 1σ and 3σ error ellipse in the ecliptic plane, the offset to the truth, a km
     scale bar and the out-of-plane 1σ.
 
+- **Flare = lost again** (`fake_demo.sh --nav` turns both on; a demo convention, since a real flare
+  only turns the spacecraft):
+  - `sim.live --flare-moves`: a flare also moves the spacecraft to a new hidden position.
+  - `solve_live --nav-reset-on-blind`: the solver drops its sightings and fix when a frame is
+    whited out (mean > 180), which is what the camera itself sees during a flare.
+  - Measured: reset after 1 s, a first new fix 14 s after the flare (3 bodies, 24,800 km off),
+    then 6 bodies and 435 km off once the scan finished.
+- **Distance-to-Earth working** on the dashboard: our position (from the photos), Earth's (from the
+  ephemeris), the subtraction written out, light time, the truth comparison, and how closely
+  Earth was seen where predicted. The map draws a labelled line to Earth.
+
 **First live run** (`--seed 4`, hidden position 1.926 AU from the Sun):
 - 400/400 frames locked.
 - After one scan (~25 s): 7 bodies; Earth is 411.392 million km away ± 23,000 km; the error vs
