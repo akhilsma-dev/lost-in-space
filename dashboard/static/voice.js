@@ -2,6 +2,11 @@
 // Mission-control voice: turns dashboard snapshots into spoken callouts.
 // Clips come from /voice/manifest.json (made once by `python -m voice.generate`), so no network.
 // app.js calls Voice.update(snapshot) on every state message. V toggles the voice.
+//
+// [added] Voice COMMANDS: a small panel (button bottom-right, or the T key) to talk or type to the probe.
+// It needs the helper `python -m voice.server`. Spoken callouts pause while the microphone is open, so the
+// dashboard does not talk over you (or into the microphone). Your commands then trigger the usual callouts
+// by themselves (rate_N, glare_on, flare, ...), because those rules watch the sim, not the panel.
 
 const Voice = (() => {
   const RATE_BUCKETS = [0, 5, 10, 15, 20], ACC_BUCKETS = [5, 10, 20, 30, 60];
@@ -16,6 +21,7 @@ const Voice = (() => {
 
   let clips = null, base = "/voice/";
   let enabled = true, blocked = false;   // blocked = browser refused autoplay until a gesture
+  let micHold = false;                   // [added] true while the command microphone is open: callouts wait
   const audio = {};                      // id -> HTMLAudioElement (preloaded)
   let queue = [], playing = null;
   const history = [];                    // [time s, id] of every line played (debugging / tests)
@@ -52,7 +58,7 @@ const Voice = (() => {
   }
   const isRelock = (id) => id.startsWith("relock_") || id === "lock_again";
   function pump() {
-    if (playing || blocked) return;
+    if (playing || blocked || micHold) return;
     const now = performance.now();
     queue = queue.filter((q) => now - q.t < (isRelock(q.id) ? STALE_RELOCK_MS : STALE_MS));
     const next = queue.shift();
@@ -70,6 +76,14 @@ const Voice = (() => {
     });
   }
   function ended(e) { if (playing && playing.el === e.target) { playing = null; pump(); } }
+
+  // [added] stop talking while the command microphone is open, carry on afterwards
+  function holdForMic(on) {
+    if (micHold === on) return;
+    micHold = on;
+    if (on && playing) { playing.el.pause(); playing = null; }
+    if (!on) pump();
+  }
 
   // ---------------------------------------------------------------- UI
   function updChip() {
@@ -96,6 +110,7 @@ const Voice = (() => {
 
   function update(S) {
     if (!S) return;
+    Cmd.update(S);   // [added] lets the command panel confirm that a command took effect
     const now = performance.now(), st = S.state, tr = S.truth;
     if (!v.init) {   // first snapshot: learn the situation silently
       v.init = true; v.state = v.cand = st; v.everLock = st === "LOCK";
@@ -204,6 +219,307 @@ const Voice = (() => {
     }
   }
 
+  // ================================================================ voice COMMANDS (input) [added]
+  // Talk or type to the probe. Speech -> text happens in the helper (python -m voice.server, which keeps the
+  // ElevenLabs key); only a short list of whitelisted sim commands can come out of it. The panel injects
+  // its own button, CSS and DOM, and uses the live snapshots to CONFIRM each command really changed the sim.
+  const Cmd = (() => {
+    const API = window.VOICE_API || `${location.protocol}//${location.hostname}:5010`;
+    const REC_MS = 6000, SERVER_REC_S = 4, CONFIRM_MS = 4000, MAX_LOG = 3;
+    const EXAMPLES = ["stop tumbling", "faster", "slow down", "tumble about the roll axis", "solar flare", "glare on"];
+    const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+    const truthOf = (S) => (S && S.truth) || null;
+
+    // Returns a function(S) -> true once a snapshot shows the command took effect, or null when the effect
+    // cannot be seen from the dashboard (axis, flare, boost, mag) or is ambiguous right now.
+    function expectFor(cmd, S) {
+      const [name, ...a] = cmd.trim().split(/\s+/);
+      const n = parseFloat(a[0]), tr = truthOf(S);
+      if (!tr) return null;
+      const base = tr.rate_dps != null ? tr.rate_dps : 0;
+      const t = (f) => (s) => { const x = truthOf(s); return !!x && f(x); };
+      switch (name) {
+        case "rate": {
+          if (tr.mode === "paused" || isNaN(n)) return null;       // a paused sim reports 0 deg/s
+          const want = clamp(n, 0, 60); return t((x) => Math.abs(x.rate_dps - want) < 0.6);
+        }
+        case "rate_add": {
+          if (tr.mode === "paused" || isNaN(n)) return null;
+          const want = clamp(base + n, 0, 60); return t((x) => Math.abs(x.rate_dps - want) < 0.6);
+        }
+        case "glare": { const want = a.length ? a[0] === "1" : !tr.glare; return t((x) => !!x.glare === want); }
+        case "calib": { const want = a.length ? a[0] === "1" : tr.mode !== "calib"; return t((x) => (x.mode === "calib") === want); }
+        case "pause": {
+          if (tr.mode === "calib") return null;                     // calibration hides the paused state
+          const want = a.length ? a[0] === "1" : tr.mode !== "paused"; return t((x) => (x.mode === "paused") === want);
+        }
+        default: return null;
+      }
+    }
+
+    let lastS = null, status = null, micMode = "none", state = "idle";   // state: idle | listening | thinking
+    let log = [], rec = null, recTimer = null, tick = null;
+    const ui = {};
+
+    function update(S) {
+      lastS = S;
+      const now = performance.now();
+      let dirty = false;
+      for (const e of log) for (const c of e.checks) {
+        if (c.status !== "pending") continue;
+        if (c.fn(S)) { c.status = "ok"; dirty = true; }
+        else if (now - e.t0 > CONFIRM_MS) { c.status = "warn"; dirty = true; }
+      }
+      if (dirty) renderLog();
+      renderLive(S);
+    }
+
+    const MIC = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+    const CSS = `
+    #voicePanel{position:fixed;right:14px;bottom:14px;z-index:60;display:flex;flex-direction:column;align-items:flex-end;gap:8px;
+      font:500 13px -apple-system,Helvetica,Arial,sans-serif;color:var(--text,#dbe3f4)}
+    #voicePanel button{font:inherit;color:inherit;cursor:pointer}
+    #vpFab{display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:22px;border:1px solid var(--edge,#27304a);
+      background:rgba(10,14,24,.92);font-weight:700;font-size:12px;letter-spacing:.1em}
+    #vpFab.on{border-color:var(--lock,#3ce67a)}
+    #vpBox{width:330px;max-height:80vh;overflow:auto;padding:12px;border-radius:12px;border:1px solid var(--edge,#27304a);
+      background:rgba(10,14,24,.96);box-shadow:0 8px 30px rgba(0,0,0,.5)}
+    #vpBox[hidden]{display:none}
+    .vp-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+    .vp-head b{letter-spacing:.1em;font-size:12px}
+    .vp-head .sp{flex:1}
+    .vp-dot{width:9px;height:9px;border-radius:50%;background:var(--dim,#6f7c96)}
+    .vp-dot.ok{background:var(--lock,#3ce67a)} .vp-dot.bad{background:var(--lost,#ff5a4e)}
+    .vp-x{border:0;background:none;font-size:20px;line-height:1;color:var(--dim,#6f7c96)}
+    .vp-live{padding:6px 8px;border-radius:8px;background:rgba(255,255,255,.04);font:600 12px SF Mono,Menlo,monospace;color:var(--dim,#6f7c96);margin-bottom:10px}
+    .vp-row{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+    .vp-mic{flex:none;width:54px;height:54px;border-radius:50%;border:2px solid var(--lock,#3ce67a);background:rgba(60,230,122,.08);
+      display:flex;align-items:center;justify-content:center;color:var(--lock,#3ce67a)}
+    .vp-mic:disabled{opacity:.35;cursor:not-allowed}
+    .vp-mic.listening{border-color:var(--lost,#ff5a4e);color:var(--lost,#ff5a4e);background:rgba(255,90,78,.12);animation:vpPulse 1s infinite}
+    .vp-mic.thinking{border-color:var(--search,#ffb83c);color:var(--search,#ffb83c);animation:vpSpin 1.2s linear infinite;border-top-color:transparent}
+    @keyframes vpPulse{0%{box-shadow:0 0 0 0 rgba(255,90,78,.5)}100%{box-shadow:0 0 0 14px rgba(255,90,78,0)}}
+    @keyframes vpSpin{to{transform:rotate(360deg)}}
+    .vp-hint{flex:1;line-height:1.35;color:var(--dim,#6f7c96)}
+    .vp-hint.err{color:var(--lost,#ff5a4e)}
+    .vp-type{display:flex;gap:6px;margin-bottom:10px}
+    .vp-type input{flex:1;min-width:0;padding:7px 9px;border-radius:8px;border:1px solid var(--edge,#27304a);background:rgba(0,0,0,.35);color:inherit;font:inherit}
+    .vp-type button{padding:7px 11px;border-radius:8px;border:1px solid var(--edge,#27304a);background:rgba(255,255,255,.06);font-weight:700;font-size:11px;letter-spacing:.06em}
+    .vp-entry{padding:8px 0;border-top:1px solid var(--edge,#27304a)}
+    .vp-heard{font-weight:600;margin-bottom:5px}
+    .vp-chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:4px}
+    .vp-chip{padding:2px 7px;border-radius:6px;background:rgba(255,255,255,.07);font:600 11px SF Mono,Menlo,monospace}
+    .vp-chip.ok{background:rgba(60,230,122,.16);color:var(--lock,#3ce67a)}
+    .vp-chip.warn{background:rgba(255,184,60,.16);color:var(--search,#ffb83c)}
+    .vp-chip.pending{color:var(--dim,#6f7c96)}
+    .vp-reply{color:var(--dim,#6f7c96);font-size:12px}
+    .vp-entry.bad .vp-heard{color:var(--lost,#ff5a4e)}
+    .vp-ex{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+    .vp-ex button{white-space:nowrap;padding:3px 8px;border-radius:12px;border:1px solid var(--edge,#27304a);background:none;font-size:11px;color:var(--dim,#6f7c96)}
+    .vp-ex button:hover{color:var(--text,#dbe3f4);border-color:var(--dim,#6f7c96)}
+    .vp-foot{margin-top:10px;font-size:11px;color:var(--dim,#6f7c96);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .vp-foot a{color:var(--con,#78a5ff);cursor:pointer;text-decoration:underline}`;
+
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const browserMicOk = () => !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+
+    function build() {
+      const st = document.createElement("style"); st.textContent = CSS; document.head.appendChild(st);
+      const el = document.createElement("div"); el.id = "voicePanel";
+      el.innerHTML = `
+        <div id="vpBox" hidden>
+          <div class="vp-head"><b>VOICE COMMAND</b><span class="vp-dot" id="vpDot"></span><span id="vpState" style="font-size:11px;color:var(--dim,#6f7c96)">checking…</span><span class="sp"></span><button class="vp-x" id="vpClose" title="Close (Esc)">×</button></div>
+          <div class="vp-live" id="vpLive">sim: waiting for data</div>
+          <div class="vp-row"><button class="vp-mic" id="vpMic" title="Click to talk (T)">${MIC}</button><div class="vp-hint" id="vpHint">Click the microphone and speak a command.</div></div>
+          <div class="vp-type"><input id="vpText" placeholder="or type: stop tumbling" autocomplete="off" spellcheck="false"><button id="vpSend">SEND</button></div>
+          <div id="vpLog"></div>
+          <div class="vp-ex" id="vpEx"></div>
+          <div class="vp-foot" id="vpFoot"></div>
+        </div>
+        <button id="vpFab" title="Talk to the probe (T)">${MIC.replace('width="22" height="22"', 'width="16" height="16"')}<span>COMMAND</span></button>`;
+      document.body.appendChild(el);
+      for (const id of ["vpBox", "vpDot", "vpState", "vpClose", "vpLive", "vpMic", "vpHint", "vpText", "vpSend", "vpLog", "vpEx", "vpFoot", "vpFab"])
+        ui[id] = document.getElementById(id);
+      ui.vpFab.onclick = () => toggle();
+      ui.vpClose.onclick = () => toggle(false);
+      ui.vpMic.onclick = micClick;
+      ui.vpSend.onclick = sendTyped;
+      // typing must never reach the page's own shortcuts (V would toggle the spoken callouts)
+      ui.vpText.addEventListener("keydown", (e) => { if (e.key === "Enter") sendTyped(); e.stopPropagation(); });
+      ui.vpEx.innerHTML = EXAMPLES.map((x) => `<button>${esc(x)}</button>`).join("");
+      ui.vpEx.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => sendText(b.textContent)));
+      document.addEventListener("keydown", (e) => {
+        const tag = (e.target && e.target.tagName) || "";
+        if (/INPUT|TEXTAREA|SELECT/.test(tag) || e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === "t" || e.key === "T") { toggle(true); micClick(); }
+        else if (e.key === "Escape" && !ui.vpBox.hidden) toggle(false);
+      });
+      renderFoot(); setState("idle");
+      setTimeout(checkStatus, 300);
+    }
+
+    function toggle(open) {
+      const show = open === undefined ? ui.vpBox.hidden : open;
+      ui.vpBox.hidden = !show; ui.vpFab.classList.toggle("on", show);
+      if (show) { checkStatus(); renderLog(); }
+    }
+    function hint(msg, bad) { ui.vpHint.textContent = msg; ui.vpHint.className = "vp-hint" + (bad ? " err" : ""); }
+
+    function setState(s, msg) {
+      state = s;
+      holdForMic(s === "listening");   // the dashboard stops talking while the microphone is open
+      ui.vpMic.className = "vp-mic " + (s === "idle" ? "" : s);
+      ui.vpMic.disabled = micMode === "none" && s === "idle";
+      if (msg) hint(msg);
+      else if (s === "idle") hint(micMode === "none" ? "No microphone available here: type a command instead."
+        : "Click the microphone and speak a command.");
+    }
+
+    function renderLive(S) {
+      if (!ui.vpLive || ui.vpBox.hidden) return;
+      const tr = S && S.truth;
+      const txt = tr ? `sim: tumble ${tr.rate_dps != null ? tr.rate_dps.toFixed(1) : "—"} °/s · glare ${tr.glare ? "ON" : "off"} · ${String(tr.mode || "").toUpperCase()}`
+                     : "sim: no truth signal";
+      if (ui.vpLive.textContent !== txt) ui.vpLive.textContent = txt;
+    }
+
+    function renderFoot() {
+      const bits = [];
+      if (status) {
+        bits.push(`speech: ${status.stt ? "ElevenLabs ✓" : "key missing on server"}`);
+        if (status.dry_run) bits.push("DRY RUN");
+      }
+      ui.vpFoot.innerHTML = bits.map(esc).join(" · ") +
+        (browserMicOk() && status && status.server_mic ? ` · <a id="vpSwap">mic: ${micMode === "browser" ? "this device" : "probe computer"}</a>` : "");
+      const sw = document.getElementById("vpSwap");
+      if (sw) sw.onclick = () => { micMode = micMode === "browser" ? "server" : "browser"; renderFoot(); setState(state); };
+    }
+
+    function renderLog() {
+      if (!ui.vpLog) return;
+      ui.vpLog.innerHTML = log.slice(0, MAX_LOG).map((e) => {
+        const chips = e.checks.map((c) => {
+          const mark = c.status === "ok" ? " ✓" : c.status === "warn" ? " ?" : c.status === "pending" ? " …" : "";
+          const tip = c.status === "warn" ? "sent, but no change seen on the dashboard yet" : c.status === "ok" ? "confirmed by the sim"
+            : c.status === "sent" ? "sent (this one cannot be seen from the dashboard)" : "waiting for the sim";
+          return `<span class="vp-chip ${c.status === "sent" ? "" : c.status}" title="${tip}">${esc(c.cmd)}${mark}</span>`;
+        }).join("");
+        return `<div class="vp-entry ${e.ok ? "" : "bad"}"><div class="vp-heard">${e.heard ? "“" + esc(e.heard) + "”" : "—"}</div>` +
+          (chips ? `<div class="vp-chips">${chips}</div>` : "") +
+          `<div class="vp-reply">${esc(e.ok ? e.reply : e.error || "failed")}</div></div>`;
+      }).join("");
+    }
+
+    // ---------------------------------------------------------------- talking to the helper
+    async function fetchJSON(path, opts = {}, ms = 25000) {
+      const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), ms);
+      try {
+        const r = await fetch(API + path, { ...opts, signal: ctl.signal });
+        return await r.json();
+      } catch (e) {
+        return { ok: false, heard: "", commands: [], reply: "", error: "Voice helper not reachable. Start it with: python -m voice.server" };
+      } finally { clearTimeout(to); }
+    }
+
+    async function checkStatus() {
+      const r = await fetch(API + "/voice/status").then((x) => x.json()).catch(() => null);
+      status = r;
+      ui.vpDot.className = "vp-dot " + (r ? "ok" : "bad");
+      ui.vpState.textContent = r ? "helper connected" : "helper offline";
+      if (r) micMode = browserMicOk() ? "browser" : r.server_mic ? "server" : "none";
+      else micMode = browserMicOk() ? "browser" : "none";
+      renderFoot();
+      if (state === "idle") setState("idle");
+      if (!r) hint("Voice helper not reachable. Start it with: python -m voice.server", true);
+    }
+
+    function handleResult(res) {
+      const e = { t0: performance.now(), heard: res.heard || "", ok: !!res.ok, reply: res.reply || "", error: res.error,
+                  checks: (res.commands || []).map((cmd) => {
+                    const fn = res.sent ? expectFor(cmd, lastS) : null;
+                    return { cmd, fn, status: fn ? "pending" : "sent" };
+                  }) };
+      log.unshift(e); log = log.slice(0, 12);
+      renderLog();
+      setState("idle");
+      if (!res.ok) hint(res.error || "That did not work.", true);
+      caption(res.ok ? res.reply : res.error || "");   // the dashboard's own caption line
+    }
+
+    async function sendText(text) {
+      text = (text || "").trim();
+      if (!text) return;
+      setState("thinking", "Sending…");
+      handleResult(await fetchJSON("/voice/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) }));
+    }
+    function sendTyped() { const x = ui.vpText.value; ui.vpText.value = ""; sendText(x); }
+
+    // ---------------------------------------------------------------- microphone
+    function micClick() {
+      if (state === "listening") return stopRec();
+      if (state === "thinking") return;
+      if (micMode === "browser") return startBrowserRec();
+      if (micMode === "server") return serverTalk();
+      setState("idle");
+    }
+
+    async function serverTalk() {
+      let left = SERVER_REC_S;
+      setState("listening", `Listening on the probe computer… ${left}s`);
+      tick = setInterval(() => { left -= 1; if (left > 0) hint(`Listening on the probe computer… ${left}s`); else { clearInterval(tick); setState("thinking", "Transcribing…"); } }, 1000);
+      const res = await fetchJSON("/voice/talk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ seconds: SERVER_REC_S }) }, 40000);
+      clearInterval(tick);
+      handleResult(res);
+    }
+
+    async function startBrowserRec() {
+      let stream;
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch (e) {
+        if (status && status.server_mic) { micMode = "server"; renderFoot(); return serverTalk(); }
+        return hint("Microphone blocked: allow it in the browser, or type a command.", true);
+      }
+      const chunks = [];
+      rec = new MediaRecorder(stream);
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      rec.onstop = async () => {
+        clearTimeout(recTimer); stream.getTracks().forEach((t) => t.stop());
+        setState("thinking", "Transcribing…");
+        handleResult(await sendAudio(new Blob(chunks, { type: rec.mimeType || "audio/webm" })));
+      };
+      rec.start();
+      setState("listening", "Listening… click again when you are done.");
+      recTimer = setTimeout(stopRec, REC_MS);
+    }
+    function stopRec() { if (rec && rec.state !== "inactive") rec.stop(); }
+
+    // 16 kHz mono WAV is what the speech model handles best, and is the same format the probe-side mic uses
+    async function toWav16k(blob) {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const buf = await ac.decodeAudioData(await blob.arrayBuffer()); ac.close();
+      const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(buf.duration * 16000)), 16000);
+      const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+      const pcm = (await off.startRendering()).getChannelData(0);
+      const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+      const w = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+      w(0, "RIFF"); out.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVEfmt "); out.setUint32(16, 16, true);
+      out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, 16000, true); out.setUint32(28, 32000, true);
+      out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, "data"); out.setUint32(40, pcm.length * 2, true);
+      for (let i = 0; i < pcm.length; i++) out.setInt16(44 + i * 2, clamp(pcm[i], -1, 1) * 0x7fff, true);
+      return new Blob([out], { type: "audio/wav" });
+    }
+    async function sendAudio(blob) {
+      let body = blob;
+      try { body = await toWav16k(blob); } catch (e) { /* send the recording as it is */ }
+      return fetchJSON("/voice/audio", { method: "POST", headers: { "Content-Type": body.type || "application/octet-stream" }, body }, 40000);
+    }
+
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", build);
+    else build();
+
+    return { update, toggle, send: sendText, _expectFor: expectFor };
+  })();
+
   // ---------------------------------------------------------------- setup
   function load() {
     fetch(base + "manifest.json").then((r) => (r.ok ? r.json() : null)).then((m) => {
@@ -224,6 +540,8 @@ const Voice = (() => {
     if (enabled) say("online");
   }
   document.addEventListener("keydown", (e) => {
+    const tag = (e.target && e.target.tagName) || "";   // [added] typing in the command box must not toggle the voice
+    if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
     if ((e.key === "v" || e.key === "V") && !e.metaKey && !e.ctrlKey) toggle();
   });
   // browsers only allow sound after a gesture: any click or key on the page unlocks it
@@ -235,5 +553,5 @@ const Voice = (() => {
   });
   load();
 
-  return { update, say, toggle, history, _test_load: useClips };
+  return { update, say, toggle, history, _test_load: useClips, cmd: Cmd };
 })();
