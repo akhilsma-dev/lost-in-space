@@ -186,7 +186,10 @@ void handleLine(char *s) {
     Serial.println(F("PONG"));
     sendKnob(millis());
   } else {
-    Serial.println(F("ERR unknown"));
+    // Echo what arrived (non-printables as '?') so garbled input can be diagnosed.
+    Serial.print(F("ERR unknown "));
+    for (uint8_t i = 0; cmd[i] && i < 16; i++) Serial.write(cmd[i] >= 32 && cmd[i] < 127 ? cmd[i] : '?');
+    Serial.println();
   }
 }
 
@@ -300,7 +303,7 @@ void setup() {
   tilt.begin(PIN_TILT, 90, TILT_MIN, TILT_MAX);
   lastServoMs = millis();
 
-  Serial.println(F("HELLO console 1"));
+  Serial.println(F("HELLO console 1 fw3"));   // protocol 1; "fw3" = build, to confirm an upload took
   updateKnob(millis());
   sendKnob(millis());
 }
