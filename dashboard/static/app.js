@@ -114,30 +114,48 @@ function updateText() {
   updateNavText();
 }
 
+// SOLVE RATE: the star-finder switch (solve_live --models), live per star finder the share of the last 30 s
+// spent in LOCK, and the benchmark rows (correct solves per frame) from dashboard/solve_rate.json.
+const MODEL = { classic: { name: "CLASSIC tetra3", col: "#9aa4b8" }, tuned: { name: "TUNED tetra3", col: "#ffb83c" },
+                starnet: { name: "StarNet CNN", col: "#3ce67a" } };
+let srPending = null;   // model asked for, until the solver reports it
+function setModel(m) {
+  srPending = { m, t: performance.now() };
+  fetch("/cmd", { method: "POST", body: JSON.stringify({ detector: m }) }).catch(() => {});
+  updateSolveRate();
+}
 function updateSolveRate() {
-  const sr = S.solve_rate, st = S.stats;
-  let rows, title, note;
-  if (sr && Array.isArray(sr.rows)) {
-    rows = sr.rows.map((r, i) => ({ label: r.label, rate: r.rate, n: r.n, col: i === sr.rows.length - 1 ? C.lock : C.search }));
-    title = sr.title || "tetra3 alone vs tetra3 + CNN";
-    note = sr.note || "";
-  } else {
-    rows = [
-      { label: "LIVE (30 s)", rate: st.lock30, n: st.n30, col: C.con },
-      { label: "tetra3 alone", rate: null, col: C.search },
-      { label: "tetra3 + CNN", rate: null, col: C.lock },
-    ];
-    title = "tetra3 alone vs tetra3 + CNN";
-    note = "Benchmark pending — drop results in dashboard/solve_rate.json";
+  const sr = S.solve_rate, st = S.stats, e = S.est || {};
+  const dets = Array.isArray(e.detectors) ? e.detectors : [], cur = e.detector;
+  if (srPending && (cur === srPending.m || performance.now() - srPending.t > 4000)) srPending = null;
+  // switch
+  const sw = $("srSwitch");
+  sw.hidden = dets.length < 2;
+  if (dets.length > 1) {
+    const html = dets.map((d) => `<button data-m="${d}" class="${d === cur ? "on" : ""}${srPending && srPending.m === d ? " wait" : ""}"` +
+      ` style="--c:${(MODEL[d] || {}).col || C.dim}">${(MODEL[d] || { name: d }).name}</button>`).join("");
+    if (sw.dataset.html !== html) {
+      sw.dataset.html = html; sw.innerHTML = html;
+      sw.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setModel(b.dataset.m)));
+    }
   }
-  $("srTitle").textContent = title;
+  // live rows: one per star finder used in the last 30 s, the active one first
+  const models = (st && st.models) || {};
+  const live = Object.entries(models).sort((a, b) => (b[0] === cur) - (a[0] === cur)).map(([d, [r, n]]) =>
+    ({ label: `LOCK HELD · ${(MODEL[d] || { name: d }).name}${d === cur ? "" : " (earlier)"}`, rate: r, n, col: (MODEL[d] || {}).col || C.con }));
+  if (!live.length) live.push({ label: "LIVE (30 s)", rate: st.lock30, n: st.n30, col: C.con });
+  let rows = live, title = "live, last 30 s", note = "";
+  if (sr && Array.isArray(sr.rows)) {
+    rows = live.concat([{ head: sr.title || "benchmark" }],
+      sr.rows.map((r) => ({ label: r.label, rate: r.rate, n: r.n, col: (MODEL[r.model] || {}).col || C.search })));
+    note = sr.note || "";
+  } else note = "Benchmark not loaded: dashboard/solve_rate.json";
+  $("srTitle").textContent = dets.length > 1 ? "choose the star finder" : title;
   $("srNote").textContent = note;
-  const html = rows.map((r) => {
-    const pend = r.rate == null;
-    return `<div class="srrow${pend ? " pending" : ""}"><span>${r.label}</span>` +
-      `<div class="bar"><div style="width:${pend ? 0 : (r.rate * 100).toFixed(1)}%;background:${r.col}"></div></div>` +
-      `<span class="num">${pend ? "pending" : (r.rate * 100).toFixed(0) + "%"}</span></div>`;
-  }).join("");
+  const html = rows.map((r) => r.head ? `<div class="srhead">${r.head}</div>` :
+    `<div class="srrow${r.rate == null ? " pending" : ""}"><span>${r.label}</span>` +
+    `<div class="bar"><div style="width:${r.rate == null ? 0 : (r.rate * 100).toFixed(1)}%;background:${r.col}"></div></div>` +
+    `<span class="num">${r.rate == null ? "—" : (r.rate * 100).toFixed(0) + "%"}</span></div>`).join("");
   if ($("srRows").innerHTML !== html) $("srRows").innerHTML = html;
 }
 

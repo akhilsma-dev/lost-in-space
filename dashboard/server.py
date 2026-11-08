@@ -18,6 +18,7 @@ import json
 import math
 import pathlib
 import shutil
+import socket
 import socketserver
 import subprocess
 import threading
@@ -246,6 +247,7 @@ class Hub(threading.Thread):
         self.cond = threading.Condition()
         self.snapshot, self.seq = "{}", 0
         self.hist = []               # [t, status(1 lock / 0 lost), err_arcsec|None, rate]
+        self.det_hist = []           # [t, star finder, LOCK this frame]: live lock rate per star finder
         self.est_seen = 0
         self.last_lock = -math.inf
         self.ever_lock = False
@@ -341,10 +343,19 @@ class Hub(threading.Thread):
             rate = (pt or {}).get("rate_dps")
             if not (pt or {}).get("mode") == "calib":
                 self.hist.append([self.est.rx, 1 if lock else 0, err and err["full"], rate])
+                if e.get("detector"):   # lock held, per star finder (a lost lock also brings a detumble, after
+                    self.det_hist.append([self.est.rx, e["detector"], lock])   # which any finder solves again)
                 self.session["n"] += 1
                 self.session["lock"] += lock
         while self.hist and now - self.hist[0][0] > HISTORY_S:
             self.hist.pop(0)
+        while self.det_hist and now - self.det_hist[0][0] > 30:
+            self.det_hist.pop(0)
+        models = {}
+        for _, d, g in self.det_hist:
+            m = models.setdefault(d, [0, 0])
+            m[0] += g
+            m[1] += 1
 
         # lock state
         if es is None:
@@ -393,7 +404,8 @@ class Hub(threading.Thread):
             "truth": (tr or paired) and {k: (tr or paired).get(k) for k in ("ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "flash", "mode", "w", "h", "frame", "slewing")},
             "paired": paired and {k: paired.get(k) for k in ("ra", "dec", "roll")},
             "est": es and {k: es.get(k) for k in ("ra", "dec", "roll", "fov", "status", "stage", "confidence", "matches",
-                                                  "prob", "rmse", "solve_ms", "n_centroids", "frontend", "omega_dps")},
+                                                  "prob", "rmse", "solve_ms", "n_centroids", "frontend", "omega_dps",
+                                                  "detector", "detectors", "detect_ms")},
             "state": state, "since_lock": None if not self.ever_lock else now - self.last_lock,
             "err": err,
             "cam": self._cam_view(),
@@ -405,7 +417,9 @@ class Hub(threading.Thread):
             "hist": [[round(p[0] - now, 2), p[1], None if p[2] is None else round(p[2], 1), p[3]] for p in self.hist],
             "stats": {"lock30": lock30, "n30": len(recent), "med_err30": errs[len(errs) // 2] if errs else None,
                       "session_n": self.session["n"], "session_lock": self.session["lock"],
-                      "uptime": now - self.t0},
+                      "uptime": now - self.t0,
+                      # per star finder, last 30 s: fraction of frames in LOCK, frames
+                      "models": {d: [g / n, n] for d, (g, n) in models.items()}},
             "solve_rate": self.solve_rate,
             "nav": self.navmap.build((es or {}).get("nav"), paired if (paired or {}).get("pos_km") else tr),
         }
@@ -426,6 +440,7 @@ def _json_default(o):
 
 # ---------------------------------------------------------------- HTTP
 def make_handler(hub, config):
+    cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -439,6 +454,21 @@ def make_handler(hub, config):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self):
+            """POST /cmd {"detector": "classic"|"tuned"|"starnet"}: switch the solver's star finder (solve_live
+            --models), forwarded as 'detector <mode>' to its command port."""
+            if self.path.split("?")[0] != "/cmd":
+                return self._send(404, b"not found", "text/plain")
+            try:
+                body = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 256)) or b"{}")
+                det = str(body.get("detector", ""))
+            except (ValueError, AttributeError):
+                det = ""
+            if det not in ("classic", "tuned", "starnet"):
+                return self._send(400, b"expected {\"detector\": \"classic|tuned|starnet\"}", "text/plain")
+            cmd_sock.sendto(f"detector {det}".encode(), ("127.0.0.1", config["solver_cmd_port"]))
+            self._send(204, b"", "text/plain")
 
         def do_GET(self):
             path = self.path.split("?")[0]
@@ -518,6 +548,8 @@ def main():
     ap.add_argument("--solve-rate", default=str(HERE / "solve_rate.json"),
                     help="JSON with the tetra3-alone vs tetra3+CNN result (see solve_rate.example.json)")
     ap.add_argument("--open", action="store_true", help="open the page full screen")
+    ap.add_argument("--solver-cmd-port", type=int, default=5011,
+                    help="camera.solve_live command port (the SOLVE RATE panel's star-finder switch)")
     ap.add_argument("--console-url", default=None,
                     help="show the virtual console (bridge.serial_bridge --fake --web) in a panel, "
                          "e.g. http://localhost:8081/")
@@ -544,7 +576,7 @@ def main():
 
     hub = Hub(truth, est, a.solve_rate, label, cam)
     hub.start()
-    srv = Server(("127.0.0.1", a.port), make_handler(hub, {"console_url": a.console_url}))
+    srv = Server(("127.0.0.1", a.port), make_handler(hub, {"console_url": a.console_url, "solver_cmd_port": a.solver_cmd_port}))
     url = f"http://localhost:{a.port}/"
     print(f"[dashboard] {label}: {url}  (truth UDP {a.truth_port}, estimates UDP {a.est_port})")
     if a.open:

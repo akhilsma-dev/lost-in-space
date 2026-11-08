@@ -138,7 +138,21 @@ class FollowSource:
         self.H = None
         self.last_frame = None
         self.bus, self.bus_name, self.render_ms = None, None, 0.0
+        self.cam = None
+        if a.sim_camera:   # film the screen with the synthetic webcam, like the real box
+            self._make_cam()
         print(f"[follow-sim] following sim.live: {self.sw}x{self.sh}, FOV {self.fov} deg")
+
+    def _make_cam(self):
+        from camera.calibrate import fit
+        from camera.fakecam import FakeCamera
+        self.cam = FakeCamera(self.sw, self.sh, seed=self.a.seed or 0)
+        r = fit(self.cam.view(checkerboard(self.sw, self.sh)[0]), self.sw, self.sh)
+        self.H = r["H"]
+        print(f"[sim-camera] filming the sim through the synthetic webcam; auto-calibrated: RMS {r['rms']:.3f} screen px")
+
+    def _film(self, t, img, tr):
+        return (t, img, tr) if self.cam is None else (t, self.cam.view(img), tr)
 
     def _bus_frame(self, tr):
         name = tr.get("shm") if not self.a.no_shm else None
@@ -169,11 +183,13 @@ class FollowSource:
         if (tr["w"], tr["h"], tr["fov"]) != (self.sw, self.sh, self.fov):
             self.sw, self.sh, self.fov = tr["w"], tr["h"], tr["fov"]
             self.sky = SkyRenderer(self.sw, self.sh, self.fov)
+            if self.cam is not None:
+                self._make_cam()
         _r0 = time.perf_counter()
         img = self._bus_frame(tr)
         if img is not None:
             self.render_ms = (time.perf_counter() - _r0) * 1000
-            return time.time(), img, tr
+            return self._film(time.time(), img, tr)
         att = from_radecroll(tr["ra"], tr["dec"], tr["roll"])
         omega = np.radians(tr.get("omega") or [0.0, 0.0, 0.0])
         from sim.planets import extra_from_list   # planets on screen (sim.live --planets)
@@ -185,7 +201,7 @@ class FollowSource:
             img += float(tr["flash"])   # flare whiteout: the sensor is blinded
         out = SkyRenderer.to_u8(img)
         self.render_ms = (time.perf_counter() - _r0) * 1000
-        return time.time(), out, tr
+        return self._film(time.time(), out, tr)
 
     def close(self):
         pass
@@ -231,7 +247,18 @@ class Solver:
         print(f"[solver] star finder: {'fast (global background)' if fast else 'robust (local background)'}")
         self.t3 = load_tetra3()
         self.starnet = None
-        if a.detector == "starnet":
+        # star finder in front of tetra3's pattern match, switchable live with --models ('detector <mode>'):
+        #   classic = tetra3's blob finder as shipped (max area 100 px: fast tumble streaks are dropped)
+        #   tuned   = the same with streaks kept (--max-area, 5000 if not set higher than 100)
+        #   starnet = our CNN (ml/), on the frame warped to screen pixels
+        self.tuned_area = a.max_area if a.max_area > 100 else 5000
+        if a.models:
+            self.modes = ["classic", "tuned", "starnet"]
+        else:
+            self.modes = ["starnet" if a.detector == "starnet" else "tuned" if a.max_area > 100 else "classic"]
+        self.mode = "starnet" if a.detector == "starnet" else self.modes[0] if not a.models else "tuned"
+        self.last_good = False
+        if "starnet" in self.modes:
             from ml import detect
             detect.load()
             detect.star_centroids(np.zeros((64, 64), np.uint8))   # warm-up: the first call is ~2 s on MPS
@@ -247,8 +274,14 @@ class Solver:
         c = (np.asarray(yx, np.float64).reshape(-1, 2) - 0.5)[:, ::-1].copy()  # tetra3 -> OpenCV convention
         return c, (c if H is None else warp_points(c, np.linalg.inv(H)))
 
+    def set_mode(self, mode):
+        if mode in self.modes and mode != self.mode:
+            print(f"[solver] star finder: {self.mode} -> {mode}")
+            self.mode = mode
+
     def solve(self, gray, fov):
-        if self.starnet is not None:
+        self.detect_ms = 0.0
+        if self.mode == "starnet":
             t0 = time.perf_counter()
             c, c_cam = self.starnet_centroids(gray)
             self.detect_ms = (time.perf_counter() - t0) * 1000
@@ -258,7 +291,8 @@ class Solver:
                                                 solve_timeout=self.a.timeout_ms, **fov_kw)
                    if len(c) >= 4 else {"RA": None})
             return c, c_cam, res, (time.perf_counter() - t0) * 1000
-        c_cam = centroids(gray, max_returned=self.a.max_centroids, max_area=self.a.max_area, **self.centroid_kw)
+        c_cam = centroids(gray, max_returned=self.a.max_centroids,
+                          max_area=100 if self.mode == "classic" else self.tuned_area, **self.centroid_kw)
         if self.src.H is not None:
             c = warp_points(c_cam, self.src.H)
             keep = (c[:, 0] > -0.5) & (c[:, 0] < self.src.sw - 0.5) & (c[:, 1] > -0.5) & (c[:, 1] < self.src.sh - 0.5)
@@ -285,7 +319,9 @@ class Solver:
     def status(self, t, res, n_stars):
         """Acquisition state machine. Returns (status, confidence, stage).
         status is LOCK / SEARCH / LOST as before; stage says what the tracker is doing right now."""
-        return self.acq.update(t, res, n_stars, self.good(res))
+        conf = self.good(res)
+        self.last_good = conf is not None   # this frame alone: a trustworthy solve (live solve rate per model)
+        return self.acq.update(t, res, n_stars, conf)
 
 
 class Acquisition:
@@ -589,7 +625,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src_g = ap.add_argument_group("source")
     src_g.add_argument("--sim", action="store_true", help="render frames from sim.sky instead of a camera")
-    src_g.add_argument("--sim-camera", action="store_true", help="with --sim: pass frames through camera.fakecam")
+    src_g.add_argument("--sim-camera", action="store_true",
+                       help="with --sim or --follow-sim: film the screen with the synthetic webcam (camera.fakecam: "
+                            "keystone, defocus, vignetting, noise, JPEG), auto-calibrated on its checkerboard")
     src_g.add_argument("--follow-sim", action="store_true",
                        help="no camera: redraw the frames the running sim.live shows (from its truth packets)")
     src_g.add_argument("--no-shm", action="store_true",
@@ -613,6 +651,9 @@ def main():
     sol.add_argument("--fov-max-error", type=float, default=2.0)
     sol.add_argument("--detector", choices=["tetra3", "starnet"], default="tetra3",
                      help="star finder before tetra3's pattern match: tetra3's blob finder, or StarNet (ml/)")
+    sol.add_argument("--models", action="store_true",
+                     help="load all star finders (classic / tuned tetra3, StarNet) and switch live with "
+                          "'detector <mode>' on --nav-cmd-port (the dashboard's SOLVE RATE panel does this)")
     sol.add_argument("--centroid-mode", choices=["auto", "fast", "robust"], default="auto",
                      help="star finder background: fast = global (black rendered sky, ~4x faster), robust = "
                           "tetra3's local filter (real camera). auto: fast for --sim / --follow-sim")
@@ -722,17 +763,28 @@ def main():
     button = a.nav and a.nav_scan > 0 and a.nav_scan_mode == "button"
     sweep_left, scan_paused, scan_base = 0, False, 0   # button mode: pointings left in the sweep, its first one
     slew_t0, slew_until = 0.0, 0.0             # our own scan slew in progress (until arrival or this deadline)
-    nav_in = None
-    if button:
+    nav_in = None     # solver command port: 'whereami' (WHERE AM I?), 'detector <mode>' (--models)
+    if button or len(solver.modes) > 1:
         nav_in = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         nav_in.bind(("127.0.0.1", a.nav_cmd_port))
         nav_in.setblocking(False)
-        print(f"[nav] scan on demand: 'whereami' on UDP {a.nav_cmd_port} (console WHERE AM I?)")
+        print(f"[cmd] solver commands on UDP {a.nav_cmd_port}: " + ", ".join(
+            (["'whereami'"] if button else []) + ([f"'detector {'|'.join(solver.modes)}'"] if len(solver.modes) > 1 else [])))
+    where_req = False
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0, "acq": []}
     shot, shot_lock = None, False
     perf = Perf()
     try:
         while not a.frames or stats["n"] < a.frames:
+            while nav_in is not None:   # commands (the model switch takes effect on this frame)
+                try:
+                    cmd = nav_in.recv(256).decode(errors="ignore").strip().lower().split()
+                except BlockingIOError:
+                    break
+                if cmd[:1] == ["whereami"]:
+                    where_req = True
+                elif cmd[:1] == ["detector"] and len(cmd) > 1:
+                    solver.set_mode(cmd[1])
             _p0 = time.perf_counter()
             t, gray, truth = src.read()
             _p1 = time.perf_counter()
@@ -765,8 +817,9 @@ def main():
                    "prob": float(res["Prob"]) if solved else None,
                    "rmse": float(res["RMSE"]) if solved else None, "solve_ms": round(ms, 1),
                    "n_centroids": len(c_scr), "centroids": np.round(c_scr[:100], 2).tolist(),
-                   "truth": truth, "err_arcsec": None, "roll_err_deg": None, "detector": a.detector,
-                   "detect_ms": round(getattr(solver, "detect_ms", 0.0), 1) if solver.starnet else None,
+                   "truth": truth, "err_arcsec": None, "roll_err_deg": None, "detector": solver.mode,
+                   "detectors": solver.modes, "good": solver.last_good,
+                   "detect_ms": round(solver.detect_ms, 1) if solver.mode == "starnet" else None,
                    # body rate measured from consecutive solves (deg/s, body frame x right, y down, z boresight)
                    "omega_dps": np.round(np.degrees(solver.acq.w), 3).tolist() if status == "LOCK" else None}
             if solved:
@@ -786,12 +839,9 @@ def main():
                     if button and sweep_left > 0:   # a sweep in progress starts over (its sightings are gone)
                         sweep_left, scan_base, slew_until = N_SCAN, scan_i, 0.0
                 was_blind = blind
-                while nav_in is not None:
-                    try:
-                        cmd = nav_in.recv(256).decode(errors="ignore").strip().lower()
-                    except BlockingIOError:
-                        break
-                    if cmd == "whereami" and sweep_left == 0:
+                if where_req:
+                    where_req = False
+                    if button and sweep_left == 0:
                         if navi is not None:
                             navi.reset()
                         # start at the scan pointing nearest to where we already look: short first turn
@@ -898,7 +948,7 @@ def main():
                     + (f"RA {msg['ra']:7.2f} Dec {msg['dec']:6.2f} Roll {msg['roll']:6.1f} "
                        f"Prob {msg['prob']:.0e} RMSE {msg['rmse']:5.0f}\"" if solved else "no solution".ljust(62))
                     + f" | {ms:4.0f} ms"
-                    + (f" (+StarNet {solver.detect_ms:4.0f} ms)" if solver.starnet else "")
+                    + (f" (+StarNet {solver.detect_ms:4.0f} ms)" if solver.mode == "starnet" else "")
                     + (f" | err {msg['err_arcsec']:6.0f}\" roll {msg['roll_err_deg']:+.2f} deg"
                        if msg["err_arcsec"] is not None else ""))
             if not a.quiet or stats["n"] % 10 == 1:

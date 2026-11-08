@@ -131,6 +131,22 @@ whole screen. Screen pixel = 94" at 50 deg / 1920 px.
 
 Blob finding (~60 ms on a 1080p frame) dominates the frame time, not tetra3.
 
+### Star finders: switch live, film through the synthetic webcam
+
+`--models` loads all three star finders and switches between them live (`detector classic|tuned|starnet` on
+`--nav-cmd-port`, the dashboard's SOLVE RATE panel): **classic** = tetra3's blob finder as shipped (max area
+100 px), **tuned** = streaks kept (`--max-area`, 5000), **starnet** = our CNN on the frame warped to screen px.
+Each estimate carries `detector`, `detectors` and `good` (this frame alone solved trustworthily).
+`--sim-camera` now also works with `--follow-sim`: each sim frame is filmed by `camera.fakecam` (keystone,
+defocus, vignetting, noise, JPEG; ~50 ms) and the camera→screen homography is auto-fitted on its checkerboard,
+so the live demo sees what the box's webcam would (`fake_demo.sh --webcam`; ~8-10 solves/s).
+
+Measured live at 20 deg/s through the webcam (25 s per model, 2026-11-08): with tetra3 (classic or tuned) the
+lock broke within seconds and recovery detumbled the craft; StarNet held LOCK for the full 25 s in one run and lost
+it in sparse sky in another (25-42 stars found, confidence 0.3-0.6). StarNet's benchmark is 97% correct frames,
+and one bad frame ends a LOCK, so at ~10 frames/s it cannot hold lock for long at 20 deg/s either: coasting
+through single-frame dropouts would make the difference show reliably (see TODO).
+
 ### Frame rate (`--follow-sim`, 2026-11-08)
 
 `solve_live` prints a `[perf]` line every 5 s: solves/s and ms per frame for read (and render), solve, nav, send.

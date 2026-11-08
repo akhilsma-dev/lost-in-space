@@ -47,7 +47,7 @@ To push mock packets through the real UDP path (the dashboard runs with no `--mo
 | **Tumble / glare / mode** | From the truth feed. |
 | **Spacecraft** | A 3D wireframe on the celestial sphere. The dashed ghost is truth and the solid green craft is the estimate. The dot is where the camera points. |
 | **Error & lock, last 90 s** | Full-attitude error on a log scale (1″ to 40°), the tumble rate (dashed, right axis), and a lock strip with red bands where the lock was lost. |
-| **Solve rate** | Reads `dashboard/solve_rate.json` every 2 s. Until that file exists it shows the live 30 s lock rate and "pending" for tetra3 alone / tetra3 + CNN. The format is in `solve_rate.example.json`; copy it and fill in the real benchmark. |
+| **Solve rate** | With `solve_live --models` (`fake_demo.sh --models`): a CLASSIC tetra3 / TUNED tetra3 / StarNet CNN switch (POST `/cmd` → `detector <mode>` on the solver's UDP 5011, `--solver-cmd-port`) and, per star finder, LOCK HELD = share of the last 30 s in LOCK. Below, the benchmark rows from `dashboard/solve_rate.json` (correct solves per frame at 20°/s: classic tetra3 12% on the clean render; through the synthetic webcam tuned tetra3 51%, StarNet 97%; format as `solve_rate.example.json` plus an optional `"model"` per row for its colour). |
 
 Truth used for errors: when the estimate packet carries the `truth` it was paired with (camera.solve_live
 does this), that truth is used, so tumble latency doesn't show up as error. Otherwise the latest truth

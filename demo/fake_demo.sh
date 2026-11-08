@@ -8,6 +8,8 @@
 #   demo/fake_demo.sh --classic  plain tetra3 blob filter (loses lock near 5 deg/s; default keeps blur streaks)
 #   demo/fake_demo.sh --starnet  StarNet (ml/, our CNN) finds the stars, tetra3 matches them (GPU/MPS if present)
 #   demo/fake_demo.sh --full     sim full screen (default: window)
+#   demo/fake_demo.sh --models   all star finders loaded; switch CLASSIC / TUNED / StarNet live on the dashboard
+#   demo/fake_demo.sh --webcam   the solver sees the sim through the synthetic webcam (like the real box)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
 #   demo/fake_demo.sh --nav      position from planets: hidden position + planets on screen; WHERE AM I? on the
 #                                virtual console slews through 8 ecliptic pointings (20 deg/s, 2 s look each; paused while spinning) and
@@ -24,7 +26,7 @@ if [[ -z "$PY" ]]; then
   if [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python; fi
 fi
 
-BOARD=0 TUNED=1 STARNET=0 FULL=0 OPEN=0 WEB=1 NAV=0
+BOARD=0 TUNED=1 STARNET=0 FULL=0 OPEN=0 WEB=1 NAV=0 MODELS=0 WEBCAM=0
 for arg in "$@"; do
   case "$arg" in
     --board) BOARD=1 ;;
@@ -35,7 +37,9 @@ for arg in "$@"; do
     --open)  OPEN=1 ;;
     --no-web) WEB=0 ;;
     --nav)   NAV=1 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    --models) MODELS=1 ;;
+    --webcam) WEBCAM=1 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg (see --help)"; exit 1 ;;
   esac
 done
@@ -73,6 +77,11 @@ SOLVE_ARGS=(--follow-sim --quiet)
 if [[ $STARNET == 1 ]]; then SOLVE_ARGS+=(--detector starnet); SOLVER_NAME=StarNet
 elif [[ $TUNED == 1 ]]; then SOLVE_ARGS+=(--max-area 5000); SOLVER_NAME=tuned
 else SOLVER_NAME=classical; fi
+# --models: load all three star finders (classic / tuned tetra3, StarNet); the dashboard's SOLVE RATE panel
+# switches between them live (StarNet takes ~10-15 s to load). --webcam: the solver films the sim through the
+# synthetic webcam (keystone, defocus, noise, JPEG), like the real box: that is where StarNet earns its keep.
+[[ $MODELS == 1 ]] && SOLVE_ARGS+=(--models --max-area 5000) && SOLVER_NAME="switchable: classic / tuned / StarNet"
+[[ $WEBCAM == 1 ]] && SOLVE_ARGS+=(--sim-camera) && SOLVER_NAME="$SOLVER_NAME, through the webcam"
 # planet nav: with the virtual console the scan runs when WHERE AM I? is pressed; a real board has no
 # such button, so there it scans continuously (both pause while the craft spins)
 if [[ $NAV == 1 ]]; then

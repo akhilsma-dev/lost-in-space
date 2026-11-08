@@ -71,6 +71,13 @@ Status as of 2026-11-08. Rule: work on a branch, a human reviews it, then it goe
 - [ ] Earth mode: accelerometer + time → lat/long
 - [ ] Stellarium as an independent sky source
 
+## Star finder switch (branch claude/model-switch)
+- [x] Live CLASSIC / TUNED / StarNet switch in the SOLVE RATE panel, LOCK HELD per model, benchmark rows (`fake_demo.sh --models`)
+- [x] `fake_demo.sh --webcam`: the solver films the sim through the synthetic webcam
+- [ ] **Coast through single-frame dropouts while LOCKed** (carry the attitude at the measured rate for up to ~0.5 s).
+      Without it no model holds lock for long at 20 deg/s through the webcam (one bad frame = LOST), so the live
+      StarNet vs tetra3 contrast is luck. With it: StarNet (97% frames) holds, tetra3 (51%) still drops.
+
 ## To add if time: getting from A to B
 - [ ] **Point at a target (attitude A → B):** a console/dashboard target picker (a named star, Earth, a planet).
       The craft slews there with the sim's `slew` command and the star tracker confirms arrival (pointing error
