@@ -351,6 +351,17 @@ function drawCraftScene(ctx, cx, cy, R, az, opts = {}) {
   const a = S.att;
   if (a.truth) drawCraft(a.truth, { bus: C.truth, panel: C.truth, bore: C.truth, up: C.truth, lw: 1, dash: [4, 4], alpha: 0.55, dot: 9, fillDot: false });
   if (a.est) drawCraft(a.est, { bus: C.lock, panel: "#5aa8ff", bore: C.lock, up: "rgba(60,230,122,.5)", lw: 1.6, dash: [], alpha: 1, dot: 4.5, fillDot: true });
+  // spin axis (inset): the axis the craft is turning about, measured from the solves; it swings round with
+  // the tumble's wobble. Both ends, since a spin axis has no preferred end on screen.
+  const w = opts.spin && a.est && S.est && S.est.omega_dps;
+  const wn = w ? Math.hypot(w[0], w[1], w[2]) : 0;
+  if (wn > 0.5) {
+    const M = a.est, u = [0, 1, 2].map((i) => (M[i][0] * w[0] + M[i][1] * w[1] + M[i][2] * w[2]) / wn);
+    const p0 = P(u.map((v) => -v * 1.05)), p1 = P(u.map((v) => v * 1.05));
+    ctx.strokeStyle = C.search; ctx.lineWidth = 2; ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.moveTo(p0[0], p0[1]); ctx.lineTo(p1[0], p1[1]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = C.search; ctx.beginPath(); ctx.arc(p1[0], p1[1], 3.5, 0, 2 * Math.PI); ctx.fill();
+  }
   if (!opts.note) return;
   if (!a.truth && !a.est) { ctx.fillStyle = C.nosig; ctx.font = "800 18px -apple-system, Helvetica, Arial"; ctx.textAlign = "center"; ctx.fillText("NO ATTITUDE", cx, cy); }
   else if (!a.est) { ctx.fillStyle = S.state === "LOST" ? C.lost : C.search; ctx.font = "700 13px -apple-system, Helvetica, Arial";
@@ -365,7 +376,7 @@ function drawCraftInset(ctx, r) {
   const sz = Math.round(Math.max(140, Math.min(r.dw, r.dh) * 0.34)), x = r.ox + 10, y = r.oy + r.dh - sz - 30;
   ctx.fillStyle = "rgba(4,7,13,.94)"; ctx.fillRect(x - 3, y - 3, sz + 6, sz + 28);
   ctx.save(); ctx.beginPath(); ctx.rect(x, y, sz, sz); ctx.clip();
-  drawCraftScene(ctx, x + sz / 2, y + sz / 2, sz * 0.44, 0.65);
+  drawCraftScene(ctx, x + sz / 2, y + sz / 2, sz * 0.44, 0.65, { spin: true });
   ctx.restore();
   ctx.strokeStyle = C.edge; ctx.lineWidth = 1; ctx.strokeRect(x - 0.5, y - 0.5, sz + 1, sz + 1);
   const tr = S.truth, rate = tr && tr.rate_dps;

@@ -766,7 +766,9 @@ def main():
                    "rmse": float(res["RMSE"]) if solved else None, "solve_ms": round(ms, 1),
                    "n_centroids": len(c_scr), "centroids": np.round(c_scr[:100], 2).tolist(),
                    "truth": truth, "err_arcsec": None, "roll_err_deg": None, "detector": a.detector,
-                   "detect_ms": round(getattr(solver, "detect_ms", 0.0), 1) if solver.starnet else None}
+                   "detect_ms": round(getattr(solver, "detect_ms", 0.0), 1) if solver.starnet else None,
+                   # body rate measured from consecutive solves (deg/s, body frame x right, y down, z boresight)
+                   "omega_dps": np.round(np.degrees(solver.acq.w), 3).tolist() if status == "LOCK" else None}
             if solved:
                 msg.update(ra=float(res["RA"]), dec=float(res["Dec"]), roll=float(res["Roll"]),
                            fov=float(res["FOV"]))

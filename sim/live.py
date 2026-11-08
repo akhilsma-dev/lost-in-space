@@ -113,12 +113,14 @@ class Sim:
             self.new_position()   # demo convention: the flare also leaves us somewhere unknown
 
     def new_wobble_axis(self):
-        """Body axis the spin axis circles around (--wobble), 40 deg away from it: a torque-free irregular body
-        does not keep a fixed spin axis, so the camera wanders over the sky instead of repeating one circle."""
-        n = np.cross(self.axis, self.rng.normal(size=3))
+        """Fixed INERTIAL direction the spin axis circles around (--wobble), 40 deg away from it, like a
+        torque-free irregular body's spin axis precessing about its fixed angular momentum: the camera wanders
+        over the sky instead of repeating one circle. (In the body frame the effect would average out.)"""
+        a = self.att.apply(self.axis)                 # spin axis in space
+        n = np.cross(a, self.rng.normal(size=3))
         n /= np.linalg.norm(n)
         c = math.radians(40.0)
-        self.wobble_axis = math.cos(c) * self.axis + math.sin(c) * n
+        self.wobble_axis = math.cos(c) * a + math.sin(c) * n
 
     def set_rate(self, dps):
         self.slew = None   # the console knob wins over a slew in progress
@@ -171,9 +173,11 @@ class Sim:
                 omega = rv / ang * rate
                 self.att = self.att * type(self.att).from_rotvec(omega * dt)
         elif not self.paused:
-            if self.a.wobble > 0 and self.rate_dps > 0:   # spin axis circles the wobble axis (body frame)
-                w = self.a.wobble * math.radians(self.rate_dps) * dt
-                self.axis = type(self.att).from_rotvec(self.wobble_axis * w).apply(self.axis)
+            if self.a.wobble > 0 and self.rate_dps > 0:   # spin axis (in space) circles the wobble axis
+                R = type(self.att)
+                a = R.from_rotvec(self.wobble_axis * self.a.wobble * math.radians(self.rate_dps) * dt).apply(
+                    self.att.apply(self.axis))
+                self.axis = self.att.inv().apply(a)           # back into the body frame
                 omega = self.axis * math.radians(self.rate_dps)
             self.att = self.att * type(self.att).from_rotvec(omega * dt)
             self.att = type(self.att).from_quat(self.att.as_quat())  # renormalise
