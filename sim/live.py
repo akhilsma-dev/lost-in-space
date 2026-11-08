@@ -106,10 +106,19 @@ class Sim:
         self.att, self.slew = random_attitude(self.rng), None
         axis = self.rng.normal(size=3)
         self.axis = axis / np.linalg.norm(axis)
+        self.new_wobble_axis()
         self.glare_corner = self.rng.choice([0.0, 1.0], 2)
         print(f"[flare] new hidden attitude; tumble {self.rate_dps:.1f} deg/s")
         if blind and self.a.flare_moves and self.eph is not None:
             self.new_position()   # demo convention: the flare also leaves us somewhere unknown
+
+    def new_wobble_axis(self):
+        """Body axis the spin axis circles around (--wobble), 40 deg away from it: a torque-free irregular body
+        does not keep a fixed spin axis, so the camera wanders over the sky instead of repeating one circle."""
+        n = np.cross(self.axis, self.rng.normal(size=3))
+        n /= np.linalg.norm(n)
+        c = math.radians(40.0)
+        self.wobble_axis = math.cos(c) * self.axis + math.sin(c) * n
 
     def set_rate(self, dps):
         self.slew = None   # the console knob wins over a slew in progress
@@ -162,6 +171,10 @@ class Sim:
                 omega = rv / ang * rate
                 self.att = self.att * type(self.att).from_rotvec(omega * dt)
         elif not self.paused:
+            if self.a.wobble > 0 and self.rate_dps > 0:   # spin axis circles the wobble axis (body frame)
+                w = self.a.wobble * math.radians(self.rate_dps) * dt
+                self.axis = type(self.att).from_rotvec(self.wobble_axis * w).apply(self.axis)
+                omega = self.axis * math.radians(self.rate_dps)
             self.att = self.att * type(self.att).from_rotvec(omega * dt)
             self.att = type(self.att).from_quat(self.att.as_quat())  # renormalise
         self.omega_now = omega   # body rate this frame (rad/s): tumble or slew
@@ -219,6 +232,9 @@ def main():
     ap.add_argument("--solver-truth-port", type=int, default=5009,
                     help="same truth for camera.solve_live (0 = don't send)")
     ap.add_argument("--cmd-port", type=int, default=5006)
+    ap.add_argument("--wobble", type=float, default=0.25,
+                    help="the tumble's spin axis circles another body axis at this fraction of the tumble rate "
+                         "(0 = fixed axis: the camera repeats the same circle of sky every turn)")
     ap.add_argument("--slew-rate", type=float, default=15.0, help="default rate for the 'slew' command, deg/s")
     ap.add_argument("--share-frames", action=argparse.BooleanOptionalAction, default=True,
                     help="put each shown frame in shared memory for solve_live --follow-sim (no redraw)")
