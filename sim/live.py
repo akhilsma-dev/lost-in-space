@@ -11,9 +11,13 @@ Keys (window must have focus):
   q / esc     quit
 
 The truth never goes on screen (the camera would see it). It is published as
-one JSON line per frame over UDP to 127.0.0.1:5005 for the dashboard:
-  {"frame", "t", "ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "mode", "w", "h"}
+one JSON line per frame over UDP to 127.0.0.1:5005 for the dashboard, and the
+same packet to 127.0.0.1:5009 for camera.solve_live (one listener per port):
+  {"frame", "t", "ra", "dec", "roll", "fov", "rate_dps", "omega", "exposure", "glare",
+   "glare_corner", "mode", "w", "h"}
 "mode" is "sky", "calib" or "paused". ra/dec/roll are tetra3's convention, at mid-exposure.
+"omega" is the body-frame angular velocity in deg/s ([0,0,0] when paused); with
+"glare_corner" it lets solve_live --follow-sim redraw exactly this frame.
 
 The same commands are accepted as text lines over UDP on 127.0.0.1:5006, so
 the serial bridge can drive it:  flare | rate <deg/s> | glare 0|1 | calib 0|1 | pause 0|1
@@ -95,7 +99,9 @@ class Sim:
         ra, dec, roll = to_radecroll(self.att)
         return {"frame": self.frame, "t": time.time(), "ra": ra, "dec": dec, "roll": roll,
                 "fov": self.a.fov, "rate_dps": 0.0 if self.paused else self.rate_dps,
+                "omega": [0.0, 0.0, 0.0] if self.paused else (self.axis * self.rate_dps).tolist(),
                 "exposure": self.a.exposure, "glare": self.glare,
+                "glare_corner": [float(v) for v in self.glare_corner],
                 "mode": "calib" if self.calib else "paused" if self.paused else "sky",
                 "w": self.a.width, "h": self.a.height}
 
@@ -111,7 +117,9 @@ def main():
     ap.add_argument("--fps", type=float, default=30.0)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--window", action="store_true", help="windowed instead of full screen")
-    ap.add_argument("--truth-port", type=int, default=5005)
+    ap.add_argument("--truth-port", type=int, default=5005, help="truth for the dashboard")
+    ap.add_argument("--solver-truth-port", type=int, default=5009,
+                    help="same truth for camera.solve_live (0 = don't send)")
     ap.add_argument("--cmd-port", type=int, default=5006)
     args = ap.parse_args()
 
@@ -141,7 +149,10 @@ def main():
 
         img = sim.step(dt)
         cv2.imshow(WIN, img)
-        out.sendto(json.dumps(sim.truth()).encode(), ("127.0.0.1", args.truth_port))
+        pkt = json.dumps(sim.truth()).encode()
+        out.sendto(pkt, ("127.0.0.1", args.truth_port))
+        if args.solver_truth_port:
+            out.sendto(pkt, ("127.0.0.1", args.solver_truth_port))
         sim.frame += 1
 
         fps_n += 1

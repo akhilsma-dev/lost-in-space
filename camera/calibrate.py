@@ -5,7 +5,7 @@ Run (sim.live running full screen on the box display, webcam pointed at it):
 It sends `calib 1` to the sim (UDP 5006), averages a few frames, finds the 9x6
 inner corners, fits the homography against `sim.sky.checkerboard`'s exact screen
 coordinates, then sends `calib 0`. Screen size comes from the sim's truth packet
-(UDP 5005), else --screen-w/--screen-h.
+(UDP 5009), else --screen-w/--screen-h.
 
 No hardware:  .venv/bin/python -m camera.calibrate --sim
       films the checkerboard with camera.fakecam and checks the fit against the
@@ -131,7 +131,7 @@ def main():
             sw, sh = pkt["w"], pkt["h"]
             print(f"sim is up: screen {sw}x{sh}, mode {pkt['mode']}")
         else:
-            print(f"no truth packets on UDP 5005; assuming screen {sw}x{sh}")
+            print(f"no truth packets on UDP 5009; assuming screen {sw}x{sh}")
         if not args.no_command:
             send_sim("calib 1")
         cam = Camera(args.index)

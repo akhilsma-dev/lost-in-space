@@ -3,6 +3,15 @@
 Files: `firmware/console/console.ino` (board), `bridge/serial_bridge.py` (laptop),
 `firmware/PROTOCOL.md` (serial + UDP protocol).
 
+## 0. Whole demo, one command (no camera, no board)
+
+```bash
+demo/fake_demo.sh            # add --tuned to hold lock while tumbling, --board for the real console
+```
+
+Starts `sim.live`, the dashboard (http://localhost:8080), `camera.solve_live --follow-sim` (estimates on
+5008 + 5007) and this bridge with the keyboard as the console. The real solver drives STATUS / ATT / SERVO.
+
 ## 1. Without hardware (fake board)
 
 Two terminals, from the repo root, with the venv active:

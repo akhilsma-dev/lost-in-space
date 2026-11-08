@@ -42,7 +42,8 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [x] Serial protocol doc (`firmware/PROTOCOL.md`)
 - [x] Serial bridge with `--fake` board mode; flare/knob → sim
 - [x] Servos show "turn since lock" (Option B)
-- [ ] **Connect solve → bridge:** solve publishes on UDP 5008, bridge listens on 5007 (and the dashboard also binds 5008). Pick a fan-out.
+- [x] Connect solve → bridge: solve_live sends estimates to 5008 (dashboard) + 5007 (bridge); sim truth to 5005 (dashboard) + 5009 (solver)
+- [x] Fake-mode demo, no camera / no board: `demo/fake_demo.sh` (solve_live `--follow-sim`)
 - [ ] Flash and test the firmware on the real board (OLED, buzzer, servos)
 - [ ] Build: dark box, console panel, servo mount + spacecraft model, webcam stand
 
