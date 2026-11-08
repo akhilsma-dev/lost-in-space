@@ -29,7 +29,7 @@ after opening before it sends anything.
 | `SERVO <pan> <tilt>` | servo targets in degrees (pan D9 clamped 0–180, tilt D10 clamped 20–160). The board slews towards them at ≤ 60 °/s. |
 | `PING` | board replies `PONG` then `KNOB <n>` |
 | `NAV <state>` | **virtual console only** (sent with `STAGE`, i.e. not to a real board by default): state of the WHERE AM I? scan from `solve_live --nav`: `IDLE`, `SCAN k/8`, `HOLD` (paused: spinning), `WAIT` (paused: no lock), `FIX`, `NO FIX`. The console shows its WHERE AM I? button once it gets one. |
-| `STAGE <text>` | acquisition stage from the solver, e.g. `STAGE VERIFYING 3/6`, `STAGE DETUMBLING 12.0`, `STAGE SEARCH SLEW`, `STAGE LOCK` (upper-case ASCII, ≤ 40 chars of text, sent on change). Shown by the virtual console under the status title while not locked. **Optional:** the bridge sends it only to the virtual / fake board by default (`--stage-lines` for a real board); the current firmware does not handle it and would answer `ERR unknown STAGE`. |
+| `STAGE <text>` | acquisition stage from the solver, e.g. `STAGE VERIFYING 3/6`, `STAGE DETUMBLING 12.0`, `STAGE SEARCH SLEW`, `STAGE COASTING` (LOCKed, carrying the attitude through frames that did not solve; the virtual console titles the OLED COASTING), `STAGE LOCK` (upper-case ASCII, ≤ 40 chars of text, sent on change). Shown by the virtual console under the status title while not locked. **Optional:** the bridge sends it only to the virtual / fake board by default (`--stage-lines` for a real board); the current firmware does not handle it and would answer `ERR unknown STAGE`. |
 
 **Link timeout:** if the board receives no line for 3 s it shows `NO LINK`
 and turns the LED off; servos hold their last position. The bridge re-sends

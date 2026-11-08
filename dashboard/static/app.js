@@ -73,8 +73,8 @@ function updateText() {
   $("confBar").style.width = (conf * 100).toFixed(0) + "%";
   $("conf").textContent = e ? conf.toFixed(2) : "—";
   $("matches").textContent = e ? e.matches : "—";
-  $("prob").textContent = lock ? fmtProb(e.prob) : "—";
-  $("rmse").textContent = lock ? e.rmse.toFixed(0) + "″" : "—";
+  $("prob").textContent = lock && !e.coasting ? fmtProb(e.prob) : "—";
+  $("rmse").textContent = lock && e.rmse != null && !e.coasting ? e.rmse.toFixed(0) + "″" : "—";
   $("solvems").textContent = e && e.solve_ms != null ? e.solve_ms.toFixed(0) + " ms" : "—";
   $("ncent").textContent = e ? e.n_centroids : "—";
 
@@ -305,6 +305,8 @@ function drawView() {
 // null when locked or when the solver does not send stages
 function stageText(S) {
   const st = S && S.est && S.est.stage;
+  // LOCKed but carrying the attitude forward through frames that did not solve
+  if (st && S.state === "LOCK" && st.startsWith("COASTING")) return `COASTING · ${(+st.split(" ")[1]).toFixed(1)} s`;
   if (!st || S.state === "LOCK" || S.state === "NO SIGNAL" || S.state === "CALIB" || st === S.state) return null;
   const [w, x] = st.split(" ", 2), rest = st.slice(w.length + 1);
   if (w === "DETECTING") return `DETECTING STARS · ${rest}`;

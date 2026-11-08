@@ -403,7 +403,7 @@ class Hub(threading.Thread):
             },
             "truth": (tr or paired) and {k: (tr or paired).get(k) for k in ("ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "flash", "mode", "w", "h", "frame", "slewing")},
             "paired": paired and {k: paired.get(k) for k in ("ra", "dec", "roll")},
-            "est": es and {k: es.get(k) for k in ("ra", "dec", "roll", "fov", "status", "stage", "confidence", "matches",
+            "est": es and {k: es.get(k) for k in ("ra", "dec", "roll", "fov", "status", "stage", "coasting", "confidence", "matches",
                                                   "prob", "rmse", "solve_ms", "n_centroids", "frontend", "omega_dps",
                                                   "detector", "detectors", "detect_ms", "camera", "cameras")},
             "state": state, "since_lock": None if not self.ever_lock else now - self.last_lock,

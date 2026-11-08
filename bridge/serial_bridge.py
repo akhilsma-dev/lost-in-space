@@ -319,6 +319,8 @@ class Bridge:
         if not stage:
             return None
         text = "".join(c for c in str(stage).upper() if 32 <= ord(c) < 127).strip()[:40]
+        if text.startswith("COASTING"):
+            text = "COASTING"   # not the seconds: one line per dropout, not one per frame
         return f"STAGE {text}" if text else None
 
     @staticmethod

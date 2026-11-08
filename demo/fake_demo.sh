@@ -89,6 +89,8 @@ if [[ $NAV == 1 ]]; then
   SOLVE_ARGS+=(--nav --nav-scan 2 --nav-reset-on-blind); SOLVER_NAME="$SOLVER_NAME + planet nav"
   [[ $BOARD == 0 && $WEB == 1 ]] && SOLVE_ARGS+=(--nav-scan-mode button)
 fi
+# SOLVE_EXTRA="--coast 0 --no-recover" demo/fake_demo.sh ...: extra solver options (testing)
+[[ -n ${SOLVE_EXTRA:-} ]] && SOLVE_ARGS+=($SOLVE_EXTRA)
 "$PY" -u -m camera.solve_live "${SOLVE_ARGS[@]}" > "$LOG_DIR/solve.log" 2>&1 &
 PIDS+=($!)
 

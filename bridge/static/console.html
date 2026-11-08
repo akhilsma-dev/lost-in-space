@@ -388,7 +388,8 @@ function fmt(v) { return v.toFixed(2).padStart(8, " "); }   // dtostrf(v, 8, 2)
 function drawOled(now) {
   oc.fillStyle = "#000"; oc.fillRect(0, 0, 128, 64);
   oc.fillStyle = "#fff"; oc.strokeStyle = "#fff"; oc.textBaseline = "alphabetic";
-  const title = st.flareAt && now - st.flareAt < FLARE_SHOW_MS ? "FLARE!" : st.status;
+  const title = st.flareAt && now - st.flareAt < FLARE_SHOW_MS ? "FLARE!"
+    : st.status === "LOCK" && /^COASTING/.test(st.stage || "") ? "COASTING" : st.status;
   oc.font = "bold 16px 'New Century Schoolbook', 'Century Schoolbook', Georgia, serif";
   oc.textAlign = "center"; oc.fillText(title, 64, 16);
   if (st.status === "LOCK") { oc.lineWidth = 1; oc.strokeRect(0.5, 0.5, 127, 19); }

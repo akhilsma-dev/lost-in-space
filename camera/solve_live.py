@@ -362,9 +362,13 @@ class Acquisition:
                      must agree within --verify-tol deg with the previous verified attitude dead-reckoned
                      forward at the body rate measured from consecutive solves. Disagreement restarts at
                      MATCHING; no good solve for --verify-timeout s also restarts.
-      LOCK           N checks passed. Once locked, the first bad frame gives LOST (immediate), and so
-                     does a solve that jumps more than --jump-tol deg from the previous frame's attitude
-                     carried forward at the measured rate (a flare without whiteout, a false match).
+      LOCK           N checks passed. Tracked frame to frame: a solve that jumps more than --jump-tol deg
+                     from the last good attitude carried forward at the measured rate (a flare without
+                     whiteout, a false match) is rejected like a frame that did not solve.
+      COASTING s     LOCKed, but the last good solve is s seconds old (blurred / unsolved / rejected
+                     frames): the attitude is carried forward at the measured rate, status stays LOCK.
+                     The first good solve that agrees resumes LOCK; none within --coast s, or a whited-out
+                     frame (< 3 blobs: flare), gives LOST.
 
     The first good solve is check 1, so LOCK comes (N-1) * spacing s after the first match."""
 
@@ -380,6 +384,8 @@ class Acquisition:
         self.t_prop = None         # time track was last propagated to
         self.lost_t = None         # when lock was last lost (or start), for recovery
         self.jump_ok_until = -1e18 # a commanded attitude change (nav-scan 'point') is expected until then
+        self.coast_att = None      # while COASTING: the dead-reckoned attitude reported instead of a solve
+        self.conf_last = 0.0       # confidence of the last good solve while LOCKed
 
     def expect_jump(self, t, window=1.0):
         """We commanded the attitude (sim 'point'): the next jump is ours, not a lost track."""
@@ -404,30 +410,43 @@ class Acquisition:
             self.lost_t = t
         att = from_radecroll(float(res["RA"]), float(res["Dec"]), float(res["Roll"])) if conf is not None else None
 
-        jump, gap = 0.0, 0.0
+        jump, gap, w_new = 0.0, 0.0, None
         if att is not None:
             # body rate from consecutive good solves (frame-to-frame, so the tumble changing is followed);
-            # jump = how far this solve is from the previous one carried forward at the old rate
+            # jump = how far this solve is from the previous one carried forward at the old rate.
+            # While LOCKed the previous good solve may be up to --coast s old (coasting through dropouts).
+            max_gap = max(0.6, a.coast + 0.1) if self.locked else 0.6
             if t <= self.jump_ok_until:
                 self.w = np.zeros(3)                          # commanded repoint: carry on from the new attitude
-            elif self.prev is not None and 0.02 < t - self.prev[0] < 0.6:
+            elif self.prev is not None and 0.02 < t - self.prev[0] < max_gap:
                 dt = gap = t - self.prev[0]
                 jump = self.angle_deg(self.prev[1] * type(att).from_rotvec(self.w * dt), att)
-                w = (self.prev[1].inv() * att).as_rotvec() / dt
-                if np.linalg.norm(w) < math.radians(90):
-                    self.w = w
+                w_new = (self.prev[1].inv() * att).as_rotvec() / dt
+        # the rate may change between frames (knob): allow --jump-rate deg/s of change over the gap
+        tol = a.jump_tol + a.jump_rate * min(gap, 0.5)   # <= 20 deg by default, even after a long coast
+        rejected = self.locked and att is not None and jump > tol
+        if att is not None and not rejected:
+            if w_new is not None and np.linalg.norm(w_new) < math.radians(90):
+                self.w = w_new
             self.prev = (t, att)
 
         if self.locked:
-            # the rate may change between frames (knob): allow --jump-rate deg/s of change over the gap
-            tol = self.a.jump_tol + self.a.jump_rate * gap
-            if conf is None or jump > tol:
-                if conf is not None:
-                    print(f"[track] attitude jumped {jump:.1f} deg in one frame (tol {tol:.1f}): LOST")
-                self.locked, self.lost_t = False, t
-                self.reset()
-                return "LOST", 0.0, "LOST"
-            return "LOCK", round(conf, 3), "LOCK"
+            if att is not None and not rejected:
+                self.coast_att, self.conf_last = None, conf
+                return "LOCK", round(conf, 3), "LOCK"
+            age = t - self.prev[0] if self.prev is not None else 1e9
+            if rejected and self.coast_att is None:
+                print(f"[track] attitude jumped {jump:.1f} deg in one frame (tol {tol:.1f}): rejected, coasting")
+            blind = n_stars < 3                               # whiteout (flare): nothing to coast through
+            if age <= a.coast and not blind:
+                # carry the last good attitude forward at the measured rate
+                self.coast_att = self.prev[1] * type(self.prev[1]).from_rotvec(self.w * age)
+                return "LOCK", round(self.conf_last * (1 - 0.5 * age / max(a.coast, 1e-6)), 3), f"COASTING {age:.1f}"
+            print(f"[track] {'sensor blinded' if blind else f'no good solve for {age:.2f} s'} "
+                  f"(coast limit {a.coast:g} s): LOST")
+            self.locked, self.lost_t, self.coast_att = False, t, None
+            self.reset()
+            return "LOST", 0.0, "LOST"
 
         self._propagate(t)
         if att is not None:
@@ -451,6 +470,7 @@ class Acquisition:
             if self.k >= a.verify_n:
                 self.locked = True
                 self.k, self.track, self.t_ver, self.t_prop = 0, None, None, None   # keep prev / w for tracking
+                self.conf_last, self.coast_att = conf, None
                 return "LOCK", round(conf, 3), "LOCK"
         elif self.k and t - (self.t_good or t) > a.verify_timeout:
             self.reset()                                      # candidate went stale
@@ -707,6 +727,10 @@ def main():
     acq.add_argument("--jump-rate", type=float, default=30.0,
                      help="deg/s: --jump-tol grows by this times the frame gap (a knob change between frames is "
                           "not a jump; flare / false-match jumps are tens of degrees)")
+    acq.add_argument("--coast", type=float, default=1.5,
+                     help="s: while LOCKed, carry the attitude forward at the measured rate through frames that "
+                          "do not solve (stage COASTING) for up to this long before LOST (a whited-out frame, < 3 blobs, "
+                          "is LOST at once); 0 = LOST on the first bad frame (the old behaviour)")
     acq.add_argument("--verify-timeout", type=float, default=2.5,
                      help="s without a good solve while VERIFYING before the candidate is dropped")
     rec = ap.add_argument_group("recovery maneuvers (while not locked)")
@@ -855,9 +879,15 @@ def main():
                    "detect_ms": round(solver.detect_ms, 1) if solver.mode == "starnet" else None,
                    # body rate measured from consecutive solves (deg/s, body frame x right, y down, z boresight)
                    "omega_dps": np.round(np.degrees(solver.acq.w), 3).tolist() if status == "LOCK" else None}
-            if solved:
+            coasting = stage.startswith("COASTING") and solver.acq.coast_att is not None
+            if coasting:     # no trusted solve this frame: report the attitude carried forward at the measured rate
+                ra_c, dec_c, roll_c = to_radecroll(solver.acq.coast_att)
+                msg.update(ra=float(ra_c), dec=float(dec_c), roll=float(roll_c), fov=fov, coasting=True)
+                solved = True
+            elif solved:
                 msg.update(ra=float(res["RA"]), dec=float(res["Dec"]), roll=float(res["Roll"]),
                            fov=float(res["FOV"]))
+            if solved:
                 if truth:
                     msg["err_arcsec"] = round(pointing_error_arcsec(msg["ra"], msg["dec"], truth["ra"], truth["dec"]), 1)
                     msg["roll_err_deg"] = round(roll_error_deg(msg["roll"], truth["roll"]), 3)
@@ -933,6 +963,7 @@ def main():
                     # not while spinning (streaked frames give junk candidates) and, in button mode, only
                     # during a WHERE AM I? sweep (no sightings are wanted between sweeps)
                     if (time.time() - nav_t >= a.nav_every and spin <= a.nav_max_rate and (active or not button)
+                            and not coasting
                             and nav_worker.submit(navi, gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)):
                         nav_t = time.time()
                 msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
@@ -979,7 +1010,8 @@ def main():
                     stats["roll"].append(abs(msg["roll_err_deg"]))
             line = (f"{status:6s} {stage:16s} conf {conf:4.2f} | {len(c_scr):3d} blobs {msg['matches']:3d} matched | "
                     + (f"RA {msg['ra']:7.2f} Dec {msg['dec']:6.2f} Roll {msg['roll']:6.1f} "
-                       f"Prob {msg['prob']:.0e} RMSE {msg['rmse']:5.0f}\"" if solved else "no solution".ljust(62))
+                       + (f"Prob {msg['prob']:.0e} RMSE {msg['rmse']:5.0f}\"" if msg["prob"] is not None and not coasting
+                          else "(dead-reckoned)".ljust(25)) if solved else "no solution".ljust(62))
                     + f" | {ms:4.0f} ms"
                     + (f" (+StarNet {solver.detect_ms:4.0f} ms)" if solver.mode == "starnet" else "")
                     + (f" | err {msg['err_arcsec']:6.0f}\" roll {msg['roll_err_deg']:+.2f} deg"
