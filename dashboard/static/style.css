@@ -105,11 +105,15 @@ table.att td:first-child { text-align: left; font: 700 12px var(--sans); letter-
 .sw.est { background: var(--lock); }
 
 #navPanel[hidden] { display: none; }
-#navmap { flex: 1; width: 100%; min-height: 0; display: block; }
-.navread { display: grid; grid-template-columns: 0.8fr 1.4fr 1fr; gap: 8px; margin-bottom: 4px; }
-.navread > div { display: flex; flex-direction: column; gap: 1px; }
-.navread .num { font-size: 15px; white-space: nowrap; }
-body.with-nav #dynPanel { display: none; }
+#navmap { flex: 1; width: 100%; min-height: 120px; display: block; }
+.navread { display: grid; grid-template-columns: 1fr 1.5fr 1fr; gap: 10px; margin-bottom: 6px; }
+.navread > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.navread .num { font-size: 19px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.navread .sub { font: 500 12px var(--mono); color: var(--dim); white-space: nowrap; }
+#navPanel.hold .navread .num { color: var(--dim); }
+#navHold { font: 700 11px var(--sans); letter-spacing: .12em; color: var(--search); }
+/* position mode: the map takes the spacecraft panel's place */
+body.with-nav #dynPanel, body.with-nav #att3dPanel { display: none; }
 
 #chartPanel { grid-area: chart; display: flex; flex-direction: column; }
 #chart { flex: 1; width: 100%; min-height: 0; display: block; }

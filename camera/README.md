@@ -63,7 +63,7 @@ chain this way. `--detector starnet` uses our CNN (`ml/`) as the star finder. `-
 
 `{"t","ra","dec","roll","fov","status","confidence","matches","prob","rmse","solve_ms","n_centroids","centroids":[[x,y],...],"truth","err_arcsec","roll_err_deg"}`
 
-- `status`: `LOCK` if tetra3 solved with >= 8 matched stars and false-match probability `prob` <= 1e-6, else `LOST` (both tunable: `--min-matches`, `--prob-max`).
+- `status`: a frame is good if tetra3 solved with >= 8 matched stars and false-match probability `prob` <= 1e-6 (`--min-matches`, `--prob-max`). `LOCK` needs 10 good frames in a row (`--lock-frames`, ~1 s at 10 fps); before that it reports `SEARCH`. Once locked, the first bad frame gives `LOST`.
 - `confidence` 0..1 = `min(1, -log10(prob)/20) * max(0, 1 - rmse/900")`; 0 when LOST.
 - `centroids`: screen pixels (x right, y down), brightest first, at most 100.
 - `truth`: the sim packet paired by receive time (`--latency`, default 0.08 s), `null` without sim.

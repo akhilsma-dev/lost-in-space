@@ -84,7 +84,7 @@ for i in $(seq 1 120); do
       echo "[demo] a component exited early; logs in $LOG_DIR:"; tail -n 5 "$LOG_DIR"/*.log; exit 1
     fi
   done
-  grep -qE "^(LOCK|LOST) " "$LOG_DIR/solve.log" 2>/dev/null && break
+  grep -qE "^(LOCK|LOST|SEARCH) " "$LOG_DIR/solve.log" 2>/dev/null && break
   [[ $i == 120 ]] && { echo "[demo] solver gave no answer in 60 s; see $LOG_DIR/solve.log"; exit 1; }
   sleep 0.5
 done

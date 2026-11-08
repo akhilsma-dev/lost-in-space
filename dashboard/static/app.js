@@ -8,7 +8,8 @@ const C = { lock: css("--lock"), lost: css("--lost"), search: css("--search"), c
 
 let S = null;          // latest snapshot
 let lastMsg = 0;       // wall time we last heard from the server
-const frame = { img: null, id: -1, loading: false };
+const frame = { img: null, id: -1, loading: false };      // truth re-render of the box screen
+const camFrame = { img: null, id: -1, loading: false };   // the frame the solver actually saw
 
 // ---------------------------------------------------------------- data in
 function onState(txt) {
@@ -24,15 +25,17 @@ function connect() {
   es.onmessage = (e) => onState(e.data);
   es.onerror = () => { /* EventSource retries by itself */ };
 }
-function maybeLoadFrame() {
-  const v = S.view;
-  if (!v.has_frame || v.frame_id === frame.id || frame.loading) return;
-  frame.loading = true;
+function loadImg(slot, url, id) {
+  if (id === slot.id || slot.loading) return;
+  slot.loading = true;
   const im = new Image();
-  const id = v.frame_id;
-  im.onload = () => { frame.img = im; frame.id = id; frame.loading = false; };
-  im.onerror = () => { frame.loading = false; };
-  im.src = "/frame.jpg?i=" + id;
+  im.onload = () => { slot.img = im; slot.id = id; slot.loading = false; };
+  im.onerror = () => { slot.loading = false; };
+  im.src = url + "?i=" + id;
+}
+function maybeLoadFrame() {
+  if (S.view.has_frame) loadImg(frame, "/frame.jpg", S.view.frame_id);
+  if (S.cam) loadImg(camFrame, "/cam.jpg", S.cam.frame_id);
 }
 
 // ---------------------------------------------------------------- formatting
@@ -153,31 +156,27 @@ function bigText(ctx, W, H, text, sub, col, px = 44) {
 }
 
 // ---------------------------------------------------------------- camera view
-function drawView() {
-  const [ctx, W, H] = fit($("view"));
-  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
-  if (!S) { bigText(ctx, W, H, "CONNECTING…", "dashboard server not reachable", C.nosig); return; }
-  const v = S.view;
-  const sc = Math.min(W / v.w, H / v.h), dw = v.w * sc, dh = v.h * sc, ox = (W - dw) / 2, oy = (H - dh) / 2;
+// Draw one sky picture (image + optional overlay) letterboxed into the box (bx, by, bw, bh).
+function drawSky(ctx, bx, by, bw, bh, img, v, o, bore, alpha = 0.9, filter = "none") {
+  const sc = Math.min(bw / v.w, bh / v.h), dw = v.w * sc, dh = v.h * sc, ox = bx + (bw - dw) / 2, oy = by + (bh - dh) / 2;
   const X = (x) => ox + x * sc, Y = (y) => oy + y * sc;
   ctx.save();
   ctx.beginPath(); ctx.rect(ox, oy, dw, dh); ctx.clip();
-  if (v.has_frame && frame.img) {
-    ctx.globalAlpha = 0.9; ctx.drawImage(frame.img, ox, oy, dw, dh); ctx.globalAlpha = 1;
-  }
-  const o = v.overlay;
+  ctx.fillStyle = "#000"; ctx.fillRect(ox, oy, dw, dh);
+  if (img) { ctx.globalAlpha = alpha; ctx.filter = filter; ctx.drawImage(img, ox, oy, dw, dh); ctx.filter = "none"; ctx.globalAlpha = 1; }
   if (o) {
     ctx.strokeStyle = C.con; ctx.globalAlpha = 0.75; ctx.lineWidth = 1.6;
     ctx.beginPath();
-    for (const [ax, ay, bx, by] of o.lines) { ctx.moveTo(X(ax), Y(ay)); ctx.lineTo(X(bx), Y(by)); }
+    for (const [ax, ay, bx2, by2] of o.lines) { ctx.moveTo(X(ax), Y(ay)); ctx.lineTo(X(bx2), Y(by2)); }
     ctx.stroke(); ctx.globalAlpha = 1;
     ctx.font = "700 13px -apple-system, Helvetica, Arial"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(120,165,255,.75)";
     for (const [x, y, n] of o.cons) ctx.fillText(n.toUpperCase(), X(x), Y(y));
   }
-  // detected centroids
-  ctx.strokeStyle = C.cent; ctx.lineWidth = 1; ctx.globalAlpha = 0.85;
-  for (const [x, y] of v.cents) { ctx.beginPath(); ctx.arc(X(x), Y(y), 5, 0, 2 * Math.PI); ctx.stroke(); }
-  ctx.globalAlpha = 1;
+  if (v.cents) {   // detected centroids
+    ctx.strokeStyle = C.cent; ctx.lineWidth = 1; ctx.globalAlpha = 0.85;
+    for (const [x, y] of v.cents) { ctx.beginPath(); ctx.arc(X(x), Y(y), 5, 0, 2 * Math.PI); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  }
   if (o) {
     ctx.strokeStyle = C.lock; ctx.lineWidth = 2;
     for (const [x, y] of o.ident) { ctx.beginPath(); ctx.arc(X(x), Y(y), 10, 0, 2 * Math.PI); ctx.stroke(); }
@@ -188,20 +187,53 @@ function drawView() {
       ctx.fillRect(X(x) + 13, Y(y) - 15, tw + 8, 18);
       ctx.fillStyle = "#d6ffe4"; ctx.fillText(name, X(x) + 17, Y(y) - 6);
     }
-    // boresight reticle
+  }
+  if (bore) {   // boresight reticle
     ctx.strokeStyle = "rgba(60,230,122,.55)"; ctx.lineWidth = 1;
-    const cx = X(v.w / 2), cy = Y(v.h / 2);
+    const cx = X(bore[0]), cy = Y(bore[1]);
     ctx.beginPath(); ctx.moveTo(cx - 18, cy); ctx.lineTo(cx - 6, cy); ctx.moveTo(cx + 6, cy); ctx.lineTo(cx + 18, cy);
     ctx.moveTo(cx, cy - 18); ctx.lineTo(cx, cy - 6); ctx.moveTo(cx, cy + 6); ctx.lineTo(cx, cy + 18); ctx.stroke();
   }
   ctx.restore();
-  ctx.strokeStyle = C.edge; ctx.strokeRect(ox + 0.5, oy + 0.5, dw - 1, dh - 1);
+  ctx.strokeStyle = C.edge; ctx.lineWidth = 1; ctx.strokeRect(ox + 0.5, oy + 0.5, dw - 1, dh - 1);
+  return { ox, oy, dw, dh };
+}
+
+function drawView() {
+  const [ctx, W, H] = fit($("view"));
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  if (!S) { bigText(ctx, W, H, "CONNECTING…", "dashboard server not reachable", C.nosig); return; }
+  const v = S.view, cam = S.cam && camFrame.img ? S.cam : null;
+  let r;
+  if (cam) {
+    // main: the frame the solver saw, overlay from the estimate solved on that same frame
+    $("viewTitle").textContent = "CAMERA VIEW";
+    $("viewNote").textContent = "what the solver sees · overlay from the ESTIMATED attitude";
+    const o = cam.overlay;
+    r = drawSky(ctx, 0, 0, W, H, camFrame.img, cam, o, o && o.bore, 1);
+    // inset: the real sky on the box screen (hidden truth), no overlay
+    if (v.has_frame && frame.img) {
+      const iw = Math.max(170, r.dw * 0.32), ih = iw * v.h / v.w, ix = r.ox + r.dw - iw - 10, iy = r.oy + 10;
+      ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(ix - 3, iy - 3, iw + 6, ih + 24);
+      // small inset: stars are 1-2 px after downscaling, so brighten them to stay visible
+      drawSky(ctx, ix, iy, iw, ih, frame.img, { w: v.w, h: v.h }, null, null, 1, "brightness(2.6) contrast(1.2)");
+      ctx.strokeStyle = C.truth; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]); ctx.strokeRect(ix - 0.5, iy - 0.5, iw + 1, ih + 1); ctx.setLineDash([]);
+      ctx.font = "700 11px -apple-system, Helvetica, Arial"; ctx.textAlign = "left"; ctx.textBaseline = "top";
+      ctx.fillStyle = C.truth; ctx.fillText("REAL SKY · hidden truth", ix + 2, iy + ih + 5);
+    }
+  } else {
+    // no camera frames (mock, or an older solver): the truth re-render with the overlay, as before
+    $("viewTitle").textContent = "SKY VIEW";
+    $("viewNote").textContent = "screen in the box, re-rendered from truth · overlay from the ESTIMATED attitude";
+    r = drawSky(ctx, 0, 0, W, H, v.has_frame ? frame.img : null, v, v.overlay, v.overlay && [v.w / 2, v.h / 2]);
+  }
+  const { ox, oy } = r;
 
   // status overlays
   const stale = performance.now() - lastMsg > 2500;
   if (stale) bigText(ctx, W, H, "DASHBOARD SERVER OFFLINE", "reconnecting…", C.lost);
   else if (!S.feeds.truth.ok && !S.feeds.est.ok) bigText(ctx, W, H, "NO SIGNAL", "waiting for truth (UDP 5005) and estimates (UDP 5008)", C.nosig);
-  else if (!v.has_frame) bigText(ctx, W, H, "NO SKY FEED", "truth (UDP 5005) missing — showing detections only", C.nosig);
+  else if (!cam && !v.has_frame) bigText(ctx, W, H, "NO SKY FEED", "truth (UDP 5005) missing — showing detections only", C.nosig);
   else if (S.state === "NO SIGNAL") bigText(ctx, W, H, "NO ESTIMATE SIGNAL", "camera solve (UDP 5008) not running", C.nosig);
   else if (S.state === "SEARCH" || S.state === "LOST") {
     ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.font = "800 22px -apple-system, Helvetica, Arial";
@@ -348,12 +380,18 @@ function updateNavText() {
   if (panel.hidden === show) { panel.hidden = !show; document.body.classList.toggle("with-nav", show); }
   if (!n) return;
   const fix = n.est_au != null;
+  // A flare turns the spacecraft, it doesn't move it: without a lock we keep the last fix and say so.
+  const hold = fix && S.state !== "LOCK";
+  panel.classList.toggle("hold", hold);
+  $("navHold").textContent = hold ? `· HOLD (no lock) · last fix ${n.age_s != null ? n.age_s.toFixed(0) + " s ago" : ""}` : "";
   $("navR").textContent = fix ? n.r_au.toFixed(4) + " AU" : "—";
-  $("navEarth").textContent = fix ? (n.earth_km / 1e6).toFixed(3) + " Mkm ± " + fmtKm(n.earth_sigma_km) : "—";
+  $("navEarth").textContent = fix ? (n.earth_km / 1e6).toFixed(3) + " Mkm" : "—";
+  $("navEarthSig").textContent = fix ? "± " + fmtKm(n.earth_sigma_km) + " (1σ)" : "";
   $("navErr").textContent = fix && n.err_km != null ? fmtKm(n.err_km) : "—";
-  $("navErr").style.color = !fix || n.err_km == null ? C.dim : n.axes_km && n.err_km < 3 * n.axes_km[0] ? C.lock : C.search;
+  $("navErr").style.color = hold || !fix || n.err_km == null ? C.dim : n.axes_km && n.err_km < 3 * n.axes_km[0] ? C.lock : C.search;
+  $("navSig").textContent = fix && n.axes_km ? "1σ ≤ " + fmtKm(n.axes_km[0]) : "";
   $("navNote").textContent = fix
-    ? `${n.bodies.length} bodies · ${n.bodies.join(", ")}`
+    ? `${n.bodies.length} bodies: ${n.bodies.join(", ")}`
     : n.status === "no fix" ? `${n.n_cand || 0} candidates · no consistent fix yet`
     : `collecting planets · ${n.n_cand || 0} candidates`;
 }
@@ -365,7 +403,7 @@ function drawNav() {
   const pl = n.planets || {}, est = n.est_au, tru = n.truth_au;
   const norm = (v) => (v ? Math.hypot(v[0], v[1]) : 0);
   const Rau = Math.max(1.75, 1.15 * Math.max(norm(est), norm(tru), norm(pl.Mars)));
-  const cx = W * 0.40, cy = H / 2, sc = Math.min(W * 0.40, H / 2) / Rau;
+  const cx = W * 0.36, cy = H / 2 + 6, sc = Math.min(W * 0.34, H / 2 - 14) / Rau;
   const X = (v) => cx + v[0] * sc, Y = (v) => cy - v[1] * sc;
   ctx.font = "600 11px -apple-system, Helvetica, Arial"; ctx.textBaseline = "middle";
   // orbits (circles through today's distance) and planets
@@ -393,10 +431,10 @@ function drawNav() {
     if (b === "Moon") continue;
     const r = norm(v);
     let px = X(v), py = Y(v), lab = b;
-    const inside = r * sc < Math.min(W * 0.40, H / 2) * 0.98;
+    const inside = r * sc < Math.min(W * 0.34, H / 2 - 14) * 0.98;
     if (!inside) {   // Jupiter / Saturn: pin to the edge in their direction
-      const k = Math.min(W * 0.40, H / 2) * 0.93 / (r * sc);
-      px = cx + v[0] * sc * k; py = cy - v[1] * sc * k; lab = `${b} ${r.toFixed(1)} AU →`;
+      const k = Math.min(W * 0.34, H / 2 - 14) * 0.95 / (r * sc);
+      px = cx + v[0] * sc * k; py = cy - v[1] * sc * k; lab = `${b} →`;
     }
     ctx.fillStyle = PLANET_COL[b] || C.dim; ctx.globalAlpha = used.has(b) ? 1 : 0.45;
     ctx.beginPath(); ctx.arc(px, py, inside ? 3.5 : 3, 0, 2 * Math.PI); ctx.fill();
@@ -407,14 +445,21 @@ function drawNav() {
     ctx.beginPath(); ctx.arc(X(tru), Y(tru), 8, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
   }
   if (est) {
-    ctx.fillStyle = C.lock; ctx.beginPath(); ctx.arc(X(est), Y(est), 4, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = S.state === "LOCK" ? C.lock : C.search;
+    ctx.beginPath(); ctx.arc(X(est), Y(est), 4, 0, 2 * Math.PI); ctx.fill();
   }
-  ctx.fillStyle = C.dim; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
-  ctx.fillText(`1 AU = ${Math.round(sc)} px · ◯ truth (hidden)  ● estimate`, 4, H - 2);
-  ctx.textBaseline = "middle";
+  // legend + 1 AU scale bar
+  ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillStyle = C.dim;
+  ctx.strokeStyle = C.dim; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(6, H - 8); ctx.lineTo(6 + sc, H - 8); ctx.stroke();
+  ctx.fillText("1 AU", 10 + sc, H - 8);
+  ctx.fillStyle = C.lock; ctx.beginPath(); ctx.arc(10, 10, 4, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = C.dim; ctx.fillText("estimate", 18, 10);
+  ctx.strokeStyle = C.truth; ctx.setLineDash([3, 2]); ctx.beginPath(); ctx.arc(80, 10, 5, 0, 2 * Math.PI); ctx.stroke();
+  ctx.setLineDash([]); ctx.fillText("truth (hidden)", 90, 10);
   // zoom inset: estimate at the centre, 1-sigma / 3-sigma ellipse (ecliptic plane), truth offset
   if (est && n.ellipse_km) {
-    const iw = Math.min(W * 0.36, 210), ih = Math.min(H * 0.62, 210), ix = W - iw - 4, iy = 4;
+    const iw = Math.min(W * 0.34, H * 0.8, 190), ih = iw, ix = W - iw - 4, iy = H - ih - 4;
     ctx.fillStyle = "rgba(7,9,15,.85)"; ctx.fillRect(ix, iy, iw, ih);
     ctx.strokeStyle = C.edge; ctx.strokeRect(ix + 0.5, iy + 0.5, iw - 1, ih - 1);
     const [a, b, th] = n.ellipse_km, e = n.err_ecl_km;
@@ -438,7 +483,6 @@ function drawNav() {
     ctx.fillStyle = C.dim; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
     ctx.fillText(fmtKm(bar), ix + 8, iy + ih - 13);
     ctx.textBaseline = "top"; ctx.fillText("ZOOM · 1σ / 3σ", ix + 6, iy + 5);
-    ctx.textAlign = "right"; ctx.fillText(`out of plane ±${fmtKm(n.sigma_z_km)}`, ix + iw - 6, iy + 5);
   } else if (!est) {
     ctx.fillStyle = C.search; ctx.textAlign = "right"; ctx.textBaseline = "top";
     ctx.fillText(n.status === "no fix" ? "NO FIX YET" : "COLLECTING PLANETS…", W - 6, 6);
@@ -463,9 +507,13 @@ function loadConfig() {
     if (!c.console_url) return;
     const u = new URL(c.console_url, location.href);
     u.searchParams.set("embed", "1");
-    $("consoleFrame").src = u.href;
     $("consolePanel").hidden = false;
     document.body.classList.add("with-console");
+    // the console (bridge) can start after the dashboard: load the frame only once it answers
+    const tryLoad = () => fetch(u.href, { mode: "no-cors", cache: "no-store" })
+      .then(() => { $("consoleFrame").src = u.href; })
+      .catch(() => setTimeout(tryLoad, 1000));
+    tryLoad();
   }).catch(() => {});
 }
 loadConfig();

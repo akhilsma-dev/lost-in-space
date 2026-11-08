@@ -14,8 +14,9 @@ are warped through the camera->screen homography (cheaper and more exact than
 warping the image). In screen pixels the geometry is an ideal pinhole with the
 sim's known FOV, so tetra3 gets a tight fov_estimate.
 
-Status: LOCK when tetra3 solves with >= --min-matches stars and false-match
-probability Prob <= --prob-max; otherwise LOST. confidence (0..1) =
+Status: a frame is good when tetra3 solves with >= --min-matches stars and
+false-match probability Prob <= --prob-max. LOCK needs --lock-frames good frames
+in a row (SEARCH while acquiring); once locked, the first bad frame gives LOST. confidence (0..1) =
 min(1, -log10(Prob)/20) * max(0, 1 - RMSE/--rmse-max); 0 when LOST.
 
 Truth: sim.live publishes truth on UDP 5009 (the dashboard has 5005); each frame is
@@ -37,17 +38,24 @@ line on 5007 (bridge.serial_bridge -> console OLED/LED/servos; --bridge-port 0 =
   {"t","ra","dec","roll","fov","status","confidence","matches","prob","rmse","solve_ms",
    "n_centroids","centroids":[[x,y],...],"truth":{...}|null,"err_arcsec","roll_err_deg"}
   centroids are in screen pixels (x right, y down), brightest first, max 100.
+Frames: the frame each estimate was solved from, downscaled to --frame-w and contrast-stretched for
+display only, goes to UDP 127.0.0.1:5010 (dashboard camera panel; --frame-port 0 = off), at most
+--frame-hz per second. One datagram: 4-byte big-endian header length, JSON header, JPEG bytes.
+  header = {"t","w","h" (JPEG px),"scale" (JPEG px per camera px),"sw","sh" (screen px),
+            "screen_to_cam": 3x3 or null (null = camera px are screen px),"cam_cents": [[x,y],...] (JPEG px),
+            "est": {"status","ra","dec","roll","fov","centroids"}}
 """
 import argparse
 import json
 import math
 import socket
+import struct
 import time
 
 import cv2
 import numpy as np
 
-from camera.common import (BRIDGE_PORT, CALIB, ESTIMATE_PORT, RECORDINGS, TRUTH_PORT, TruthListener, centroids,
+from camera.common import (BRIDGE_PORT, CALIB, ESTIMATE_PORT, FRAME_PORT, RECORDINGS, TRUTH_PORT, TruthListener, centroids,
                            load_calib, load_tetra3, pointing_error_arcsec, roll_error_deg, warp_points)
 from sim.sky import SkyRenderer, checkerboard, from_radecroll, random_attitude, to_radecroll
 
@@ -171,6 +179,7 @@ class CameraSource:
 class Solver:
     def __init__(self, a, src):
         self.a, self.src = a, src
+        self.locked, self.streak = False, 0   # acquisition: --lock-frames good frames in a row before LOCK
         self.t3 = load_tetra3()
         self.starnet = None
         if a.detector == "starnet":
@@ -216,14 +225,68 @@ class Solver:
         ms = (time.perf_counter() - t0) * 1000
         return c, c_cam, res, ms
 
-    def status(self, res):
+    def good(self, res):
         if res.get("RA") is None:
-            return "LOST", 0.0
+            return None
         prob, rmse, n = float(res["Prob"]), float(res["RMSE"]), int(res["Matches"])
         if n < self.a.min_matches or prob > self.a.prob_max:
-            return "LOST", 0.0
-        conf = min(1.0, -math.log10(max(prob, 1e-300)) / 20) * max(0.0, 1 - rmse / self.a.rmse_max)
+            return None
+        return min(1.0, -math.log10(max(prob, 1e-300)) / 20) * max(0.0, 1 - rmse / self.a.rmse_max)
+
+    def status(self, res):
+        conf = self.good(res)
+        if conf is None:
+            was, self.locked, self.streak = self.locked, False, 0
+            return ("LOST" if was else "SEARCH"), 0.0
+        self.streak += 1
+        if not self.locked and self.streak < self.a.lock_frames:
+            return "SEARCH", 0.0   # acquiring: solving, but not confirmed yet
+        self.locked = True
         return "LOCK", round(conf, 3)
+
+
+class FrameSender:
+    """Sends the solved frame to the dashboard so it can show the real camera image next to the truth
+    render. Display only: the solver never sees the stretched / downscaled copy."""
+    MAX_BYTES = 60000
+
+    def __init__(self, port, width, hz):
+        self.port, self.width, self.period, self.next_t = port, width, 1.0 / hz if hz > 0 else 0.0, 0.0
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)   # macOS caps UDP sends at 9 KB otherwise
+
+    @staticmethod
+    def stretch(g):
+        """Black level to 0, brightest stars to 255, so a dim real webcam frame is visible on a projector.
+        A sensor whiteout stays white (the black level is capped)."""
+        lo = min(float(np.percentile(g, 5)), 60.0)
+        hi = max(float(np.percentile(g, 99.9)), lo + 64.0)
+        return np.clip((g.astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+
+    def send(self, t, gray, H, sw, sh, c_cam, est):
+        now = time.monotonic()
+        if now < self.next_t:
+            return
+        self.next_t = now + self.period
+        h0, w0 = gray.shape[:2]
+        s = min(1.0, self.width / w0)
+        small = cv2.resize(gray, (round(w0 * s), round(h0 * s)), interpolation=cv2.INTER_AREA) if s < 1 else gray
+        small = self.stretch(small)
+        for q in (80, 65, 50, 35):
+            ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, q])
+            if ok and len(buf) <= self.MAX_BYTES:
+                break
+        else:
+            return
+        hdr = {"t": t, "w": small.shape[1], "h": small.shape[0], "scale": s, "sw": sw, "sh": sh,
+               "screen_to_cam": None if H is None else np.linalg.inv(H).tolist(),
+               "cam_cents": np.round(np.asarray(c_cam[:100], float).reshape(-1, 2) * s, 1).tolist(),
+               "est": {k: est[k] for k in ("status", "ra", "dec", "roll", "fov", "centroids")}}
+        hb = json.dumps(hdr, separators=(",", ":")).encode()
+        try:
+            self.sock.sendto(struct.pack(">I", len(hb)) + hb + buf.tobytes(), ("127.0.0.1", self.port))
+        except OSError:
+            pass
 
 
 def annotate(gray, c_cam, res, H, status, line):
@@ -273,13 +336,17 @@ def main():
     sol.add_argument("--timeout-ms", type=int, default=500)
     sol.add_argument("--min-matches", type=int, default=8)
     sol.add_argument("--prob-max", type=float, default=1e-6)
+    sol.add_argument("--lock-frames", type=int, default=10,
+                     help="good frames in a row before declaring LOCK (acquisition dwell; ~1 s at 10 fps). "
+                          "Once locked, one bad frame drops to LOST")
     sol.add_argument("--rmse-max", type=float, default=900.0, help="arcsec, for the confidence score")
     nav = ap.add_argument_group("position from planets")
     nav.add_argument("--nav", action="store_true", help="find planets after each lock and fix the position")
     nav.add_argument("--nav-scan", type=float, default=0.0,
                      help="drive sim.live through 8 ecliptic pointings, this many s each (0 = don't)")
     nav.add_argument("--nav-sigma", type=float, default=10.0, help="planet direction error, arcsec (ellipsoid)")
-    nav.add_argument("--nav-memory", type=float, default=60.0, help="forget candidates not seen for this long, s")
+    nav.add_argument("--nav-memory", type=float, default=0.0,
+                     help="forget candidates not seen for this long, s (0 = 1.5 scan cycles with --nav-scan, else 60)")
     nav.add_argument("--nav-jd", type=float, default=2461352.5,
                      help="epoch (TDB JD) if the truth packet carries none; sim.live --planets default")
     nav.add_argument("--cmd-port", type=int, default=5006, help="sim.live command port (for --nav-scan)")
@@ -290,6 +357,10 @@ def main():
     io.add_argument("--estimate-port", type=int, default=ESTIMATE_PORT, help="estimates for the dashboard")
     io.add_argument("--bridge-port", type=int, default=BRIDGE_PORT,
                     help="same estimates for bridge.serial_bridge (0 = don't send)")
+    io.add_argument("--frame-port", type=int, default=FRAME_PORT,
+                    help="solved frames (small JPEG) for the dashboard camera panel (0 = don't send)")
+    io.add_argument("--frame-w", type=int, default=640, help="width of the frames sent to the dashboard, px")
+    io.add_argument("--frame-hz", type=float, default=10.0, help="max frames per second sent to the dashboard")
     io.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = run forever)")
     io.add_argument("--show", action="store_true", help="window with centroids / matches")
     io.add_argument("--save-shot", nargs="?", const="auto", default=None,
@@ -300,6 +371,8 @@ def main():
     src = FollowSource(a) if a.follow_sim else SimSource(a) if a.sim else CameraSource(a)
     solver = Solver(a, src)
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    out.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+    frames = FrameSender(a.frame_port, a.frame_w, a.frame_hz) if a.frame_port else None
     navi, scan_i, scan_t, nav_print = None, 0, 0.0, 0.0
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0}
     shot, shot_lock = None, False
@@ -338,7 +411,8 @@ def main():
                     if navi is None:
                         from camera.navigate import CandidateFinder, LiveNavigator
                         navi = LiveNavigator(CandidateFinder(src.sw, src.sh, fov, src.H), a.nav_jd,
-                                             sigma_arcsec=a.nav_sigma, memory_s=a.nav_memory)
+                                             sigma_arcsec=a.nav_sigma,
+                                             memory_s=a.nav_memory or (12 * a.nav_scan if a.nav_scan > 0 else 60.0))
                         print(f"[nav] navigator ready ({src.sw}x{src.sh}, FOV {fov} deg)")
                     if truth and truth.get("jd"):
                         navi.jd = truth["jd"]   # the spacecraft clock; the sim's epoch
@@ -357,6 +431,8 @@ def main():
             out.sendto(pkt, ("127.0.0.1", a.estimate_port))
             if a.bridge_port:
                 out.sendto(pkt, ("127.0.0.1", a.bridge_port))
+            if frames is not None:
+                frames.send(t, gray, src.H, src.sw, src.sh, c_cam, msg)
 
             stats["n"] += 1
             stats["nc"].append(len(c_scr))
@@ -368,7 +444,7 @@ def main():
                 if msg["err_arcsec"] is not None:
                     stats["err"].append(msg["err_arcsec"])
                     stats["roll"].append(abs(msg["roll_err_deg"]))
-            line = (f"{status:4s} conf {conf:4.2f} | {len(c_scr):3d} blobs {msg['matches']:3d} matched | "
+            line = (f"{status:6s} conf {conf:4.2f} | {len(c_scr):3d} blobs {msg['matches']:3d} matched | "
                     + (f"RA {msg['ra']:7.2f} Dec {msg['dec']:6.2f} Roll {msg['roll']:6.1f} "
                        f"Prob {msg['prob']:.0e} RMSE {msg['rmse']:5.0f}\"" if solved else "no solution".ljust(62))
                     + f" | {ms:4.0f} ms"
