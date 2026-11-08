@@ -126,3 +126,79 @@ the macOS camera prompt and stay `not authorized`.
   than assuming. Fallback if nothing locks: screen at 100% brightness, let
   tetra3's local background subtraction absorb the auto-gain, `--avg N` for
   static scenes, or lock the camera with its vendor app / `uvc-util` first.
+
+## Position from planets (`camera/navigate.py`, offline proof)
+
+Stars give attitude only. Bodies in the Solar System are close enough to show parallax:
+each identified planet at its known position X_i (JPL DE421) gives a line of sight u_i through
+the spacecraft, so three or more give the position P.
+
+```
+# one-time: JPL ephemeris, ~17 MB, gitignored
+.venv/bin/python -c "from skyfield.api import Loader; Loader('data')('de421.bsp')"
+
+.venv/bin/python -m sim.planets                          # sanity check: the sky seen from Earth
+.venv/bin/python -m camera.navigate --bench              # 24 positions, geometry + rendered, ~1 min
+.venv/bin/python -m camera.navigate --bench --mode geometry --n 200
+.venv/bin/python -m camera.navigate --bench --mode rendered --n 6 --save-frames
+```
+
+Writes `camera/out/nav_bench.md` (summary + per-position table), `nav_bench.csv`, `nav_bench.png`.
+
+Pieces:
+- `sim/planets.py`: `Ephemeris.positions(jd)` (heliocentric ICRF km for the Sun, Mercury, Venus,
+  Earth, Moon, Mars, and the Jupiter and Saturn barycentres), `Ephemeris.apparent(P, jd)` (unit direction
+  from P with light time, distance, magnitude H + 5 log10(r Δ) + a crude phase term).
+- `SkyRenderer.render(att, ..., extra=(dirs, mags))` draws extra point sources in the stars' blob style.
+  Without `extra` the output is bit-identical to before.
+- `camera/navigate.py`:
+  - `pixel_rays`: pinhole camera, f = (w/2)/tan(fov/2), x right, y down, z boresight, then the solved attitude.
+  - `refine_attitude`: least-squares (Kabsch) refit of tetra3's attitude on every blob near a
+    catalogue star. tetra3's own attitude was off by 12″ median and up to ~130″ in roll; the refit
+    brings that to about 2.6″, and the rays at the frame edge improve to match.
+  - `position_fix` / `refine`: Σ wᵢ(I − uᵢuᵢᵀ)(Xᵢ − P) = 0, first unweighted, then wᵢ = 1/(σᵢrᵢ)².
+    The Sun can be a sighting (X = 0).
+  - `covariance` / `ellipsoid`: (Σ (I − uuᵀ)/(σᵢrᵢ)²)⁻¹ and its 1σ semi-axes.
+  - `identify`: brute force over seeds of (3 candidates × 3 bodies). Each seed gives a P in
+    0.3–6 AU, predicts every body from it and gathers the candidates that agree within 120″. It
+    keeps the hypothesis with the most bodies, then the lowest residual.
+  - `navigate`: identify, then the final fix with light time.
+  - Unresolved Earth+Moon: from a few tenths of an AU the two are one blob. `identify` also tries
+    the pseudo-body "Earth+Moon" (its flux-weighted photocentre). The flux-vs-magnitude curve comes
+    from the display's blob model, which a real camera would calibrate on identified stars.
+
+Benchmark scenario: hidden observer 0.7–2 AU from the Sun, ecliptic latitude ±3°, at epoch
+2026-11-08. The nav scan is 8 pointings along the ecliptic at Sun elongations 40°–320°
+(1920×1080, 50° FOV, 10° overlap). No pointing is within 35° of the Sun, and the Sun is never
+rendered. Each frame is solved with the solve_live settings: centroids with max_area 100,
+60 centroids, FOV 50 ± 2°, at least 8 matches, Prob ≤ 1e-6. A second centroid pass with
+max_area 3000 finds the planets: anything brighter than about mag 1 renders larger than 100 px
+and tetra3's star filter drops it. Blobs more than 4 px from every catalogue star are candidates.
+
+Results (24 positions, `--seed 1`; `camera/out/nav_bench.md`):
+
+| mode | Sun | fixes | median err | 90% err | median 1σ ellipsoid | mean NEES | ID ok |
+|---|---|---:|---:|---:|---|---:|---:|
+| geometry, 20″ noise | no | 23/24 | 25,600 km (1.7e-4 AU) | 147,000 km | 31,000 / 9,400 / 8,900 km | 3.7 | 23/23 |
+| geometry, 20″ noise | 20″ | 24/24 | 18,200 km | 43,000 km | 19,000 / 9,200 / 8,600 km | 2.6 | 24/24 |
+| rendered | no | 23/24 | 8,100 km (5.4e-5 AU) | 18,100 km | 8,900 / 2,300 / 2,300 km | 3.2 | 23/23 |
+| rendered | 20″ | 24/24 | 7,100 km | 17,400 km | 8,300 / 2,700 / 2,500 km | 3.0 | 24/24 |
+
+- At 20″ the geometry mode matches the feasibility review's 10,000–30,000 km estimate.
+- The rendered sim does better because its planet directions are better than 20″:
+  median 1.9″ after the attitude refit. The display is noise-free and its pixel geometry is
+  exact. A real camera on a real screen will be closer to the geometry row.
+- NEES ≈ 3 means the ellipsoid is honest. Rendered used σ = 5″.
+- The long axis of the ellipsoid points out of the ecliptic, because every planet lies near
+  that plane (feasibility review point 5).
+- One position had no fix: only Mars and Jupiter were visible, and two lines are not enough
+  without the Sun.
+- Identification was 100% correct on every fix.
+
+Next steps (not done):
+- sim.live: a hidden position as well as the hidden attitude, with planets drawn through `render(extra=...)`
+  and the position published in the truth packet.
+- A `point <ra> <dec>` command on UDP 5006, so the navigator can drive its own scan.
+- solve_live / a navigator process that collects candidates across the scan and publishes P and its covariance.
+- A dashboard solar-system map: true P, estimated P, the ellipsoid, and the sighted bodies.
+- Test with `--noise` and through `camera.fakecam`, then on the real camera.

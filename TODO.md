@@ -17,7 +17,7 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [x] Calibration checkerboard mode
 - [x] Truth on UDP 5005, commands on UDP 5006
 - [x] Verified: tetra3 solves 15/15 static frames (~70″)
-- [ ] Planets / Sun / Moon from DE421
+- [ ] Planets / Sun / Moon from DE421 (ephemeris `sim/planets.py` + `SkyRenderer.render(extra=...)` done; not yet shown by `sim.live`)
 
 ## Camera + solve (`camera/`)
 - [x] Capture with exposure/focus locking attempts
@@ -57,7 +57,7 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [ ] Test on the demo laptop with the real camera feed
 
 ## Stretch
-- [ ] Position from 3+ planets with error ellipsoid
+- [ ] Position from 3+ planets with error ellipsoid. Step 1, the offline proof, is done: `camera/navigate.py --bench`, ~8,000 km median from a rendered 8-frame scan (`camera/out/nav_bench.md`). Next: live integration (see `camera/README.md`)
 - [ ] Earth mode: accelerometer + time → lat/long
 - [ ] Stellarium as an independent sky source
 
