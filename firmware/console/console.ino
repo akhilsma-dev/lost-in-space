@@ -9,7 +9,7 @@
 
 #include <Arduino.h>
 #include <Servo.h>
-#include <U8g2lib.h>
+#include <U8x8lib.h>
 
 // ---------------------------------------------------------------- pins
 const uint8_t PIN_BTN = 6;
@@ -34,7 +34,10 @@ const uint16_t OLED_MIN_MS = 200;        // redraw at most 5x/s
 
 // ---------------------------------------------------------------- OLED
 // The kit's SSD1315 works with the SSD1306 driver; hardware I2C pins used as SW I2C.
-U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, /* clock=*/SCL, /* data=*/SDA, U8X8_PIN_NONE);
+// U8x8 (text-only, 16x8 character cells) writes straight to the display with no frame
+// buffer. The U8g2 full-buffer mode needed 1 KB of the Uno's 2 KB RAM, which left ~45
+// bytes of stack and corrupted the display.
+U8X8_SSD1306_128X64_NONAME_SW_I2C u8x8(/* clock=*/SCL, /* data=*/SDA, /* reset=*/U8X8_PIN_NONE);
 
 // ---------------------------------------------------------------- state
 enum Status : uint8_t { ST_NOLINK, ST_SEARCH, ST_LOCK, ST_LOST };
@@ -203,40 +206,57 @@ void readSerial() {
 }
 
 // ---------------------------------------------------------------- OLED
-// Software I2C is slow (a full 1 KB frame blocks for tens of ms, long enough to overflow
-// the 64-byte serial RX buffer). So we render into the RAM buffer, then push it out one
-// 8-pixel tile row per loop() pass, reading serial in between.
-int8_t oledRow = -1;   // next tile row to send, -1 = idle
+// Software I2C is slow (a whole screen blocks for tens of ms, long enough to overflow the
+// 64-byte serial RX buffer). So render() composes the text into small RAM strings, then
+// updateOled() pushes one row per loop() pass, reading serial in between.
+// Layout (8 rows of 16 chars): rows 0-1 big 2x2 title, rows 2-7 normal text.
+const uint8_t COLS = 16, TEXT_ROW0 = 2, TEXT_ROWS = 6;
+char oledTitle[COLS / 2 + 1];                // 8 big chars, space padded (always full width)
+bool oledTitleInverse = false;
+char oledText[TEXT_ROWS][COLS + 1];          // rows 2..7, space padded
+int8_t oledRow = -1;   // next row to send, -1 = idle
 uint32_t lastDrawMs = 0;
 
+// Copy s into a space-padded fixed-width row (clears leftovers from the previous frame).
+void setRow(char *dst, uint8_t width, const char *s, uint8_t col = 0) {
+  memset(dst, ' ', width);
+  dst[width] = 0;
+  for (uint8_t i = col; i < width && *s; i++) dst[i] = *s++;
+}
+
 void render(uint32_t now) {
-  char buf[22];
-  u8g2.clearBuffer();
-
-  u8g2.setFont(u8g2_font_ncenB14_tr);
+  char buf[COLS + 1];
   const char *title = (flareShownMs && now - flareShownMs < 1000) ? "FLARE!" : STATUS_NAMES[status];
-  u8g2.drawStr((128 - u8g2.getStrWidth(title)) / 2, 16, title);
-  if (status == ST_LOCK) u8g2.drawFrame(0, 0, 128, 20);
+  setRow(oledTitle, COLS / 2, title, (COLS / 2 - strlen(title)) / 2);
+  oledTitleInverse = (status == ST_LOCK);    // solid bar = locked
 
-  u8g2.setFont(u8g2_font_6x10_tr);
+  for (uint8_t i = 0; i < TEXT_ROWS; i++) setRow(oledText[i], COLS, "");
   if (haveAtt) {
-    u8g2.drawStr(0, 31, "RA");   dtostrf(attRa, 8, 2, buf);   u8g2.drawStr(36, 31, buf);
-    u8g2.drawStr(0, 41, "DEC");  dtostrf(attDec, 8, 2, buf);  u8g2.drawStr(36, 41, buf);
-    u8g2.drawStr(0, 51, "ROLL"); dtostrf(attRoll, 8, 2, buf); u8g2.drawStr(36, 51, buf);
+    char v[10];
+    dtostrf(attRa, 8, 2, v);   snprintf(buf, sizeof(buf), "RA   %s", v); setRow(oledText[1], COLS, buf);
+    dtostrf(attDec, 8, 2, v);  snprintf(buf, sizeof(buf), "DEC  %s", v); setRow(oledText[2], COLS, buf);
+    dtostrf(attRoll, 8, 2, v); snprintf(buf, sizeof(buf), "ROLL %s", v); setRow(oledText[3], COLS, buf);
   } else {
-    u8g2.drawStr(0, 41, "no attitude yet");
+    setRow(oledText[2], COLS, "no attitude yet");
   }
   float rate = knobSent < 0 ? 0 : knobSent * KNOB_MAX_RATE / 1023.0;
   char r[8];
   dtostrf(rate, 4, 1, r);
-  snprintf(buf, sizeof(buf), "TUMBLE %s deg/s", r);
-  u8g2.drawStr(0, 63, buf);
+  snprintf(buf, sizeof(buf), "TUMBLE %s d/s", r);
+  setRow(oledText[TEXT_ROWS - 1], COLS, buf);
 }
 
 void updateOled(uint32_t now) {
   if (oledRow >= 0) {
-    u8g2.updateDisplayArea(0, oledRow, 16, 1);
-    if (++oledRow >= 8) oledRow = -1;
+    if (oledRow < TEXT_ROW0) {
+      u8x8.setInverseFont(oledTitleInverse);
+      u8x8.draw2x2String(0, 0, oledTitle);
+      u8x8.setInverseFont(0);
+      oledRow = TEXT_ROW0;
+    } else {
+      u8x8.drawString(0, oledRow, oledText[oledRow - TEXT_ROW0]);
+      if (++oledRow >= TEXT_ROW0 + TEXT_ROWS) oledRow = -1;
+    }
     return;
   }
   bool flareExpired = flareShownMs && now - flareShownMs >= 1000;
@@ -257,7 +277,9 @@ void setup() {
   pinMode(PIN_BUZZ, OUTPUT);
   digitalWrite(PIN_LED, LOW);
 
-  u8g2.begin();
+  u8x8.begin();
+  u8x8.setFont(u8x8_font_chroma48medium8_r);
+  u8x8.clearDisplay();
   pan.begin(PIN_PAN, 90, PAN_MIN, PAN_MAX);
   tilt.begin(PIN_TILT, 90, TILT_MIN, TILT_MAX);
   lastServoMs = millis();
