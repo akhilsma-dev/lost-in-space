@@ -32,6 +32,16 @@ label { color: var(--dim); font-size: 11px; letter-spacing: .12em; font-weight: 
 .feed.ok i { background: var(--lock); box-shadow: 0 0 8px var(--lock); }
 .feed b { color: var(--text); font-family: var(--mono); font-weight: 500; }
 .chip { padding: 3px 10px; border: 1px solid var(--edge); border-radius: 20px; color: var(--search); }
+button.chip { background: none; font: inherit; cursor: pointer; }
+.chip.voice.on { color: var(--lock); border-color: rgba(60,230,122,.4); }
+.chip.voice.off { color: var(--dim); }
+.chip.voice.blocked { color: var(--search); border-color: var(--search); animation: pulse 1.4s ease-in-out infinite; }
+#caption { position: absolute; left: 50%; bottom: 44px; transform: translate(-50%, 8px); max-width: 80%;
+  padding: 8px 16px; border-radius: 8px; background: rgba(7, 9, 15, .82); border: 1px solid var(--edge);
+  font: 600 18px var(--sans); letter-spacing: .02em; color: var(--text); text-align: center;
+  opacity: 0; transition: opacity .25s, transform .25s; pointer-events: none; }
+#caption::before { content: "MISSION CONTROL"; display: block; color: var(--lock); font-size: 10px; letter-spacing: .2em; margin-bottom: 2px; }
+#caption.show { opacity: 1; transform: translate(-50%, 0); }
 .clock { font-family: var(--mono); color: var(--dim); }
 
 #grid { height: calc(100% - 52px); display: grid; gap: 10px; padding: 10px;
@@ -104,10 +114,17 @@ table.att td:first-child { text-align: left; font: 700 12px var(--sans); letter-
 .srrow .num { text-align: right; font-size: 18px; }
 .srrow.pending .num { color: var(--dim); font-size: 12px; }
 
+#consolePanel { grid-area: console; display: flex; flex-direction: column; }
+#consolePanel[hidden] { display: none; }
+#consoleFrame { flex: 1; width: 100%; min-height: 0; border: 0; display: block; background: transparent; }
+body.with-console #grid { grid-template-columns: minmax(0, 1fr) 610px 480px;
+  grid-template-areas: "view view side" "chart console rate"; }
+
 #fsHint { position: fixed; bottom: 6px; left: 50%; transform: translateX(-50%); color: var(--dim); font-size: 11px; opacity: .6; pointer-events: none; }
 body.fs #fsHint { display: none; }
 
 @media (max-width: 1300px) {
   #grid { grid-template-columns: minmax(0, 1fr) 400px; }
+  body.with-console #grid { grid-template-columns: minmax(0, 1fr) 610px 400px; }
   .badge { font-size: 26px; }
 }

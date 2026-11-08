@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Mission Console</title>
+<style>
+:root {
+  --bg: #07090f; --panel: #0d1220; --edge: #1b2438; --text: #dbe3f4; --dim: #6f7c96;
+  --lock: #3ce67a; --lost: #ff5a4e; --search: #ffb83c; --oled: #cfe9ff;
+  --plate1: #1a2131; --plate2: #10151f;
+  --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --sans: -apple-system, "Inter", "Helvetica Neue", Arial, sans-serif;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); }
+body { display: flex; align-items: center; justify-content: center; padding: 16px; user-select: none; -webkit-user-select: none; }
+label, .lab { color: var(--dim); font-size: 10px; letter-spacing: .14em; font-weight: 700; text-transform: uppercase; }
+
+/* the faceplate */
+.plate { position: relative; display: grid; gap: 18px; padding: 22px 22px 18px; border-radius: 14px;
+  background: linear-gradient(160deg, var(--plate1), var(--plate2)); border: 1px solid #263049;
+  box-shadow: 0 1px 0 rgba(255,255,255,.05) inset, 0 20px 40px rgba(0,0,0,.45);
+  grid-template-columns: auto auto; grid-template-areas: "oled oled" "knob btn" "servo servo" "log log";
+  max-width: 560px; width: 100%; }
+.screw { position: absolute; width: 9px; height: 9px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #5b6680, #232a3a);
+  box-shadow: 0 0 0 1px #0a0d14; }
+.screw::after { content: ""; position: absolute; left: 1px; right: 1px; top: 4px; height: 1px; background: #0b0f17; transform: rotate(35deg); }
+.screw.tl { top: 8px; left: 8px; } .screw.tr { top: 8px; right: 8px; } .screw.bl { bottom: 8px; left: 8px; } .screw.br { bottom: 8px; right: 8px; }
+
+.title { position: absolute; top: 6px; left: 0; right: 0; text-align: center; font-size: 9px; letter-spacing: .4em; color: var(--dim); font-weight: 700; }
+
+/* OLED + LED + buzzer */
+.oledrow { grid-area: oled; display: flex; gap: 16px; align-items: center; justify-content: center; }
+.bezel { background: #05070b; padding: 8px; border-radius: 6px; border: 1px solid #2a3348; box-shadow: 0 0 0 3px #0b0f18; }
+#oled { display: block; width: 256px; height: 128px; image-rendering: pixelated; image-rendering: crisp-edges;
+  filter: drop-shadow(0 0 3px rgba(150, 205, 255, .55)); }
+.indic { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+.led { width: 22px; height: 22px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #2c4535, #0e1a13);
+  box-shadow: 0 0 0 2px #0a0d14, 0 1px 0 rgba(255,255,255,.06); transition: background .08s, box-shadow .08s; }
+.led.on { background: radial-gradient(circle at 35% 30%, #d6ffe4, var(--lock) 45%, #138a3e);
+  box-shadow: 0 0 0 2px #0a0d14, 0 0 14px 3px rgba(60,230,122,.65); }
+.spk { width: 30px; height: 30px; border-radius: 50%; border: none; padding: 0; cursor: pointer;
+  background: repeating-radial-gradient(circle, #05070b 0 1.5px, #2a3346 1.5px 3.5px); box-shadow: 0 0 0 2px #0a0d14; position: relative; }
+.spk.sounding { box-shadow: 0 0 0 2px #0a0d14, 0 0 10px 2px rgba(255,184,60,.6); }
+.spk.muted::after { content: ""; position: absolute; left: 3px; right: 3px; top: 14px; height: 2px; background: var(--lost); transform: rotate(-45deg); border-radius: 1px; }
+.indic .lab { margin-top: -8px; }
+
+/* knob */
+.knobwrap { grid-area: knob; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+#knob { width: 150px; height: 150px; touch-action: none; cursor: ns-resize; outline: none; }
+#knob:focus-visible .cap { stroke: var(--search); stroke-width: 2; }
+.rateout { font: 600 15px var(--mono); }
+.rateout small { color: var(--dim); font-size: 11px; }
+
+/* flare button */
+.btnwrap { grid-area: btn; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+.guard { padding: 10px; border-radius: 50%; background: repeating-linear-gradient(45deg, #2a2410 0 8px, #c99a12 8px 16px); box-shadow: 0 0 0 2px #0a0d14; }
+#flare { width: 108px; height: 108px; border-radius: 50%; border: none; cursor: pointer; color: #ffe9e6;
+  font: 900 15px var(--sans); letter-spacing: .14em; outline: none;
+  background: radial-gradient(circle at 40% 32%, #ff8b80, #e2281b 55%, #8e140c);
+  box-shadow: 0 7px 0 #5a0c06, 0 9px 14px rgba(0,0,0,.5), inset 0 2px 2px rgba(255,255,255,.35);
+  transform: translateY(0); transition: transform .05s, box-shadow .05s; }
+#flare:active, #flare.down { transform: translateY(6px); box-shadow: 0 1px 0 #5a0c06, 0 2px 4px rgba(0,0,0,.5), inset 0 2px 6px rgba(0,0,0,.35); }
+#flare:focus-visible { box-shadow: 0 7px 0 #5a0c06, 0 0 0 3px var(--search); }
+
+/* servos */
+.servos { grid-area: servo; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.dial { background: #090d16; border: 1px solid var(--edge); border-radius: 8px; padding: 6px 8px 4px; display: flex; flex-direction: column; align-items: center; }
+.dial svg { width: 100%; max-width: 220px; height: auto; display: block; }
+.dial .head { display: flex; justify-content: space-between; width: 100%; }
+.dial .num { font: 500 12px var(--mono); color: var(--text); }
+
+/* serial monitor */
+.log { grid-area: log; font: 11px/1.45 var(--mono); color: var(--dim); background: #05070b; border: 1px solid var(--edge);
+  border-radius: 6px; padding: 6px 8px; height: 86px; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+.log .tx { color: #7fb6ff; } .log .rx { color: var(--search); }
+.conn { position: absolute; top: 5px; right: 26px; font-size: 9px; letter-spacing: .14em; font-weight: 700; color: var(--lost); }
+.conn.ok { color: var(--lock); }
+
+/* compact layout inside the dashboard panel (about 640 x 180) */
+body.embed { padding: 0; background: transparent; align-items: stretch; justify-content: stretch; overflow: hidden; }
+body.embed .plate { max-width: none; height: 100%; padding: 8px 10px; gap: 12px; border-radius: 0; box-shadow: none; border: none; background: transparent;
+  grid-template-columns: auto auto auto 1fr; grid-template-areas: "oled knob btn servo"; align-items: center; }
+body.embed .screw, body.embed .title, body.embed .log { display: none; }
+body.embed .conn { top: 0; right: 4px; }
+body.embed .oledrow { flex-direction: column; gap: 8px; }
+body.embed #oled { width: 192px; height: 96px; }
+body.embed .bezel { padding: 5px; }
+body.embed .indic { flex-direction: row; gap: 14px; }
+body.embed .indic .lab { margin: 0; }
+body.embed #knob { width: 118px; height: 118px; }
+body.embed #flare { width: 78px; height: 78px; font-size: 12px; }
+body.embed .guard { padding: 7px; }
+body.embed .servos { grid-template-columns: 1fr; gap: 6px; min-width: 120px; }
+body.embed .dial { padding: 3px 6px 2px; }
+body.embed .dial svg { max-width: 150px; max-height: 58px; }
+
+@media (max-width: 520px) {
+  body:not(.embed) .plate { grid-template-columns: 1fr 1fr; padding: 22px 12px 14px; }
+  body:not(.embed) .title { text-align: left; padding-left: 24px; letter-spacing: .16em; }
+  body:not(.embed) #oled { width: 100%; max-width: 256px; height: auto; aspect-ratio: 2 / 1; }
+  body:not(.embed) #knob { width: 130px; height: 130px; }
+  body:not(.embed) #flare { width: 92px; height: 92px; }
+}
+</style>
+</head>
+<body>
+<div class="plate">
+  <i class="screw tl"></i><i class="screw tr"></i><i class="screw bl"></i><i class="screw br"></i>
+  <div class="title">MISSION CONSOLE · VIRTUAL</div>
+  <div id="conn" class="conn">NO BRIDGE</div>
+
+  <div class="oledrow">
+    <div class="bezel"><canvas id="oled" width="128" height="64"></canvas></div>
+    <div class="indic">
+      <div id="led" class="led" title="D4 · attitude lock"></div><span class="lab">LOCK</span>
+      <button id="spk" class="spk muted" title="buzzer: click to switch sound on/off" aria-label="toggle buzzer sound"></button><span class="lab" id="spkLab">SOUND</span>
+    </div>
+  </div>
+
+  <div class="knobwrap">
+    <svg id="knob" viewBox="-80 -80 160 160" tabindex="0" role="slider" aria-label="tumble rate knob" aria-valuemin="0" aria-valuemax="1023">
+      <g id="ticks"></g>
+      <circle r="47" fill="#06080d" stroke="#2a3348" stroke-width="1"/>
+      <g id="knobRot">
+        <circle class="cap" r="42" fill="url(#capg)" stroke="#3a4560" stroke-width="1"/>
+        <rect x="-2.5" y="-40" width="5" height="18" rx="2" fill="#ffb83c"/>
+      </g>
+      <defs>
+        <radialGradient id="capg" cx="40%" cy="35%" r="70%"><stop offset="0" stop-color="#4a5571"/><stop offset="1" stop-color="#161b28"/></radialGradient>
+      </defs>
+    </svg>
+    <span class="lab">TUMBLE</span>
+    <span class="rateout"><span id="rateTxt">0.0</span> <small>°/s</small></span>
+  </div>
+
+  <div class="btnwrap">
+    <div class="guard"><button id="flare" aria-label="solar flare">FLARE</button></div>
+    <span class="lab">SOLAR FLARE · SPACE</span>
+  </div>
+
+  <div class="servos">
+    <div class="dial"><div class="head"><span class="lab">PAN · D9</span><span class="num" id="panTxt">90°</span></div><svg id="panDial" viewBox="-60 -56 120 62"></svg></div>
+    <div class="dial"><div class="head"><span class="lab">TILT · D10</span><span class="num" id="tiltTxt">90°</span></div><svg id="tiltDial" viewBox="-60 -56 120 62"></svg></div>
+  </div>
+
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+"use strict";
+// Plays firmware/console/console.ino in the browser. Lines from the bridge arrive on /events;
+// presses go back on /input. Constants are the firmware's.
+const KNOB_DELTA = 6, KNOB_MIN_MS = 50, KNOB_MAX_RATE = 20.0, SERVO_MAX_DPS = 60.0;
+const PAN = [0, 180], TILT = [20, 160], LINK_TIMEOUT_MS = 3000, FLARE_SHOW_MS = 1000;
+const CHIRP = [[1800, 60], [0, 30], [2400, 90]];
+const ALARM = [[900, 150], [0, 80], [700, 150], [0, 80], [900, 150], [0, 80], [700, 300]];
+const CLICK = [[3000, 15]];
+
+const $ = (id) => document.getElementById(id);
+if (new URLSearchParams(location.search).has("embed")) document.body.classList.add("embed");
+
+const st = { status: "NO LINK", ra: 0, dec: 0, roll: 0, haveAtt: false, lastRx: 0, flareAt: 0,
+             knob: 0, knobSent: 0, knobSentAt: 0, dragging: false,
+             pan: 90, tilt: 90, panT: 90, tiltT: 90, bridge: false };
+
+// ---------------------------------------------------------------- serial monitor
+// latest line of each kind, in a fixed order, so 10 Hz ATT/SERVO don't scroll the presses away
+const LOG_ORDER = ["STATUS", "ATT", "SERVO", "BTN", "KNOB"], logLast = {};
+let logDirty = false;
+function logLine(dir, text) {
+  const kind = text.split(" ")[0];
+  if (!LOG_ORDER.includes(kind)) return;
+  const prev = logLast[kind];
+  logLast[kind] = { dir, text, n: prev && prev.text === text ? prev.n + 1 : (prev ? prev.n + 1 : 1), t: performance.now() };
+  logDirty = true;
+}
+function drawLog(now) {
+  if (!logDirty || document.body.classList.contains("embed")) return;
+  logDirty = false;
+  $("log").innerHTML = LOG_ORDER.filter((k) => logLast[k]).map((k) => {
+    const l = logLast[k], fresh = now - l.t < 400;
+    return `<div class="${l.dir === ">" ? "tx" : "rx"}" style="opacity:${fresh ? 1 : 0.6}">${l.dir === ">" ? "laptop → board" : "board → laptop"}  ${l.text}  <span style="opacity:.45">×${l.n}</span></div>`;
+  }).join("");
+}
+
+// ---------------------------------------------------------------- buzzer (WebAudio square wave, like tone())
+let actx = null, osc = null, gain = null, soundOn = false, buzzUntil = 0;
+function audioInit() {
+  if (actx) return actx.resume();
+  try {
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    gain = actx.createGain(); gain.gain.value = 0; gain.connect(actx.destination);
+    osc = actx.createOscillator(); osc.type = "square"; osc.connect(gain); osc.start();
+  } catch (e) { actx = null; }
+}
+function play(seq) {
+  let t = 0;
+  for (const [, ms] of seq) t += ms;
+  buzzUntil = performance.now() + t;
+  if (!soundOn || !actx) return;
+  let at = actx.currentTime + 0.01;
+  gain.gain.cancelScheduledValues(at);
+  for (const [hz, ms] of seq) {
+    if (hz) { osc.frequency.setValueAtTime(hz, at); gain.gain.setValueAtTime(0.06, at); }
+    else gain.gain.setValueAtTime(0, at);
+    at += ms / 1000;
+  }
+  gain.gain.setValueAtTime(0, at);
+}
+function setSound(on) {
+  soundOn = on;
+  if (on) audioInit();
+  $("spk").classList.toggle("muted", !on);
+  $("spkLab").textContent = on ? "SOUND" : "MUTED";
+  try { localStorage.setItem("console.sound", on ? "1" : "0"); } catch (e) {}
+}
+$("spk").addEventListener("click", () => { setSound(!soundOn); if (soundOn) play(CLICK); });
+// browsers only allow audio after a gesture: the first press anywhere switches sound on (unless muted before)
+let soundPref = null;
+try { soundPref = localStorage.getItem("console.sound"); } catch (e) {}
+document.addEventListener("pointerdown", (e) => { if (soundPref !== "0" && e.target !== $("spk")) setSound(true); }, { once: true, capture: true });
+
+// ---------------------------------------------------------------- firmware: lines from the laptop
+function setStatus(s) {
+  if (s === st.status) return;
+  const prev = st.status;
+  st.status = s;
+  if (s === "LOCK") play(CHIRP);
+  else if (s === "LOST" && prev !== "NO LINK") play(ALARM);
+}
+function onLaptopLine(line) {
+  const p = line.trim().split(/\s+/);
+  st.lastRx = performance.now();
+  if (p[0] === "STATUS" && ["LOCK", "LOST", "SEARCH"].includes(p[1])) setStatus(p[1]);
+  else if (p[0] === "ATT" && p.length >= 4) { [st.ra, st.dec, st.roll] = p.slice(1, 4).map(Number); st.haveAtt = true; }
+  else if (p[0] === "SERVO" && p.length >= 3) {
+    st.panT = Math.min(PAN[1], Math.max(PAN[0], +p[1]));
+    st.tiltT = Math.min(TILT[1], Math.max(TILT[0], +p[2]));
+  }
+}
+function onBoardLine(line) {   // another page or the keyboard moved the knob
+  const p = line.split(" ");
+  if (p[0] === "KNOB") { st.knobSent = +p[1]; if (!st.dragging) { st.knob = st.knobSent; drawKnob(); } }
+}
+
+// ---------------------------------------------------------------- link to the bridge
+function send(line) {
+  logLine("<", line);
+  fetch("input", { method: "POST", body: line }).catch(() => {});
+}
+function connect() {
+  const es = new EventSource("events");
+  es.onopen = () => { st.bridge = true; updConn(); };
+  es.onerror = () => { st.bridge = false; updConn(); };
+  es.onmessage = (e) => {
+    const dir = e.data[0], line = e.data.slice(2);
+    if (dir === ">") onLaptopLine(line); else onBoardLine(line);
+    if (dir === ">" || !st.dragging) logLine(dir, line);
+  };
+}
+function updConn() { $("conn").textContent = st.bridge ? "BRIDGE LINK" : "NO BRIDGE"; $("conn").className = "conn" + (st.bridge ? " ok" : ""); }
+
+// ---------------------------------------------------------------- flare button
+function flare() {
+  st.flareAt = performance.now();
+  play(CLICK);
+  send("BTN FLARE");
+  const b = $("flare"); b.classList.add("down"); setTimeout(() => b.classList.remove("down"), 120);
+}
+$("flare").addEventListener("click", (e) => { if (e.detail !== 0) flare(); });   // mouse/touch
+$("flare").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); flare(); } });
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && !e.repeat && document.activeElement !== $("knob")) { e.preventDefault(); flare(); }
+});
+
+// ---------------------------------------------------------------- knob (vertical drag, wheel, arrows; double-click = 0)
+const KNOB_SWEEP = 270;
+(function ticks() {
+  let g = "";
+  for (let i = 0; i <= 20; i++) {
+    const a = (-KNOB_SWEEP / 2 + KNOB_SWEEP * i / 20) * Math.PI / 180, big = i % 5 === 0;
+    const r0 = big ? 52 : 54, r1 = 60;
+    g += `<line x1="${r0 * Math.sin(a)}" y1="${-r0 * Math.cos(a)}" x2="${r1 * Math.sin(a)}" y2="${-r1 * Math.cos(a)}" stroke="${big ? "#8a96b0" : "#3a4560"}" stroke-width="${big ? 2 : 1}"/>`;
+    if (big) g += `<text x="${70 * Math.sin(a)}" y="${-70 * Math.cos(a) + 4}" fill="#6f7c96" font-size="10" font-family="ui-monospace,Menlo,monospace" text-anchor="middle">${i}</text>`;
+  }
+  $("ticks").innerHTML = g;
+})();
+function drawKnob() {
+  const a = -KNOB_SWEEP / 2 + KNOB_SWEEP * st.knob / 1023;
+  $("knobRot").setAttribute("transform", `rotate(${a})`);
+  $("knob").setAttribute("aria-valuenow", Math.round(st.knob));
+  const rate = st.knob <= 8 ? 0 : st.knob * KNOB_MAX_RATE / 1023;   // bridge's dead zone
+  $("rateTxt").textContent = rate.toFixed(1);
+}
+function setKnob(v, final) {
+  st.knob = Math.max(0, Math.min(1023, v));
+  drawKnob();
+  const n = Math.round(st.knob), now = performance.now();
+  const atEnd = (n <= 2 && st.knobSent > 2) || (n >= 1021 && st.knobSent < 1021);
+  if ((Math.abs(n - st.knobSent) >= KNOB_DELTA || atEnd || (final && n !== st.knobSent)) && (now - st.knobSentAt >= KNOB_MIN_MS || final)) {
+    st.knobSent = n; st.knobSentAt = now; send("KNOB " + n);
+  }
+}
+(function knobInput() {
+  const k = $("knob");
+  let y0 = 0, v0 = 0, tail = null;
+  k.addEventListener("pointerdown", (e) => { k.setPointerCapture(e.pointerId); st.dragging = true; y0 = e.clientY; v0 = st.knob; k.focus(); });
+  k.addEventListener("pointermove", (e) => {
+    if (!st.dragging) return;
+    setKnob(v0 + (y0 - e.clientY) * 1023 / 220);
+    clearTimeout(tail); tail = setTimeout(() => setKnob(st.knob, true), KNOB_MIN_MS + 10);
+  });
+  const up = () => { if (st.dragging) { st.dragging = false; setKnob(st.knob, true); } };
+  k.addEventListener("pointerup", up); k.addEventListener("pointercancel", up);
+  k.addEventListener("wheel", (e) => { e.preventDefault(); setKnob(st.knob - Math.sign(e.deltaY) * 25.6, true); }, { passive: false });
+  k.addEventListener("dblclick", () => setKnob(0, true));
+  k.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 102.3 : 25.6;
+    const d = { ArrowUp: step, ArrowRight: step, ArrowDown: -step, ArrowLeft: -step, PageUp: 204.6, PageDown: -204.6 }[e.key];
+    if (d) { e.preventDefault(); setKnob(st.knob + d, true); }
+    else if (e.key === "Home" || e.key === "0") { e.preventDefault(); setKnob(0, true); }
+    else if (e.key === "End") { e.preventDefault(); setKnob(1023, true); }
+  });
+})();
+
+// ---------------------------------------------------------------- servo dials
+function dialSvg(lo, hi) {
+  let g = `<path d="M -50 0 A 50 50 0 0 1 50 0" fill="none" stroke="#1f2840" stroke-width="7"/>`;
+  const arc = (a, b, col) => {   // degrees 0..180 (0 = left)
+    const P = (d) => [-50 * Math.cos(d * Math.PI / 180), -50 * Math.sin(d * Math.PI / 180)];
+    const [x0, y0] = P(a), [x1, y1] = P(b);
+    return `<path d="M ${x0} ${y0} A 50 50 0 0 1 ${x1} ${y1}" fill="none" stroke="${col}" stroke-width="7"/>`;
+  };
+  g += arc(lo, hi, "#26324e");
+  for (let d = 0; d <= 180; d += 30) {
+    const c = Math.cos(d * Math.PI / 180), s = Math.sin(d * Math.PI / 180);
+    g += `<line x1="${-41 * c}" y1="${-41 * s}" x2="${-46 * c}" y2="${-46 * s}" stroke="#56607a" stroke-width="1.2"/>`;
+  }
+  g += `<line class="tgt" x1="0" y1="0" x2="0" y2="-52" stroke="#ffb83c" stroke-width="1.2" stroke-dasharray="2 2" opacity=".7"/>`;
+  g += `<line class="ndl" x1="0" y1="0" x2="0" y2="-46" stroke="#dbe3f4" stroke-width="2.5" stroke-linecap="round"/>`;
+  g += `<circle r="4" fill="#dbe3f4"/>`;
+  return g;
+}
+$("panDial").innerHTML = dialSvg(...PAN);
+$("tiltDial").innerHTML = dialSvg(...TILT);
+function setDial(svg, pos, tgt) {
+  // 0 deg points left, 90 up, 180 right
+  svg.querySelector(".ndl").setAttribute("transform", `rotate(${pos - 90})`);
+  svg.querySelector(".tgt").setAttribute("transform", `rotate(${tgt - 90})`);
+}
+
+// ---------------------------------------------------------------- OLED (128x64, 1-bit)
+const oc = $("oled").getContext("2d", { willReadFrequently: true });
+const OLED_ON = [207, 233, 255];
+function fmt(v) { return v.toFixed(2).padStart(8, " "); }   // dtostrf(v, 8, 2)
+function drawOled(now) {
+  oc.fillStyle = "#000"; oc.fillRect(0, 0, 128, 64);
+  oc.fillStyle = "#fff"; oc.strokeStyle = "#fff"; oc.textBaseline = "alphabetic";
+  const title = st.flareAt && now - st.flareAt < FLARE_SHOW_MS ? "FLARE!" : st.status;
+  oc.font = "bold 16px 'New Century Schoolbook', 'Century Schoolbook', Georgia, serif";
+  oc.textAlign = "center"; oc.fillText(title, 64, 16);
+  if (st.status === "LOCK") { oc.lineWidth = 1; oc.strokeRect(0.5, 0.5, 127, 19); }
+  oc.textAlign = "left"; oc.font = "10px Menlo, 'DejaVu Sans Mono', monospace";
+  if (st.haveAtt) {
+    const row = (lab, v, y) => { oc.fillText(lab, 0, y); oc.fillText(fmt(v), 36, y); };
+    row("RA", st.ra, 31); row("DEC", st.dec, 41); row("ROLL", st.roll, 51);
+  } else oc.fillText("no attitude yet", 0, 41);
+  const rate = st.knobSent * KNOB_MAX_RATE / 1023;
+  oc.fillText(`TUMBLE ${rate.toFixed(1).padStart(4, " ")} deg/s`, 0, 63);
+  // threshold to 1-bit pixels so it reads like the real panel
+  const im = oc.getImageData(0, 0, 128, 64), d = im.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const on = d[i] > 100;
+    d[i] = on ? OLED_ON[0] : 2; d[i + 1] = on ? OLED_ON[1] : 4; d[i + 2] = on ? OLED_ON[2] : 8; d[i + 3] = 255;
+  }
+  oc.putImageData(im, 0, 0);
+}
+
+// ---------------------------------------------------------------- loop (firmware's loop())
+let lastT = performance.now(), lastOled = -1e9;
+function loop(now) {
+  const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  if (st.status !== "NO LINK" && now - st.lastRx > LINK_TIMEOUT_MS) st.status = "NO LINK";
+  const step = SERVO_MAX_DPS * dt;
+  st.pan += Math.max(-step, Math.min(step, st.panT - st.pan));
+  st.tilt += Math.max(-step, Math.min(step, st.tiltT - st.tilt));
+  setDial($("panDial"), st.pan, st.panT); setDial($("tiltDial"), st.tilt, st.tiltT);
+  $("panTxt").textContent = st.pan.toFixed(0) + "°"; $("tiltTxt").textContent = st.tilt.toFixed(0) + "°";
+  $("led").classList.toggle("on", st.status === "LOCK");
+  $("spk").classList.toggle("sounding", now < buzzUntil && soundOn);
+  if (now - lastOled >= 100) { lastOled = now; drawOled(now); drawLog(now); logDirty = true; }   // the real panel redraws <= 5x/s
+}
+// a timer, not requestAnimationFrame: like the board, keep running when the page is in the background
+if (soundPref === "1") { soundOn = true; $("spk").classList.remove("muted"); }   // needs a gesture before it's audible
+drawKnob(); updConn(); connect(); loop(performance.now()); setInterval(() => loop(performance.now()), 20);
+</script>
+</body>
+</html>

@@ -6,6 +6,8 @@ No hardware, perfect screen pixels straight from sim.sky:
       .venv/bin/python -m camera.solve_live --sim --rate 2 --frames 100
 No hardware, through a synthetic webcam (keystone, blur, noise, JPEG) + auto-calibration:
       .venv/bin/python -m camera.solve_live --sim --sim-camera --frames 100
+No hardware, following the running sim.live (fake-mode demo: console flare/tumble reach the solver):
+      .venv/bin/python -m camera.solve_live --follow-sim
 
 Pipeline: tetra3's blob finder runs on the raw camera frame; only the centroids
 are warped through the camera->screen homography (cheaper and more exact than
@@ -16,11 +18,12 @@ Status: LOCK when tetra3 solves with >= --min-matches stars and false-match
 probability Prob <= --prob-max; otherwise LOST. confidence (0..1) =
 min(1, -log10(Prob)/20) * max(0, 1 - RMSE/--rmse-max); 0 when LOST.
 
-Truth: sim.live publishes truth on UDP 5005; each frame is paired with the
-truth packet received closest to (capture time - --latency) and the pointing
-error is printed. In --sim mode truth is exact.
+Truth: sim.live publishes truth on UDP 5009 (the dashboard has 5005); each frame is
+paired with the truth packet received closest to (capture time - --latency) and the
+pointing error is printed. In --sim and --follow-sim modes truth is exact.
 
-Output: one JSON line per frame on UDP 127.0.0.1:5008
+Output: one JSON line per frame on UDP 127.0.0.1:5008 (dashboard), and the same
+line on 5007 (bridge.serial_bridge -> console OLED/LED/servos; --bridge-port 0 = off)
   {"t","ra","dec","roll","fov","status","confidence","matches","prob","rmse","solve_ms",
    "n_centroids","centroids":[[x,y],...],"truth":{...}|null,"err_arcsec","roll_err_deg"}
   centroids are in screen pixels (x right, y down), brightest first, max 100.
@@ -34,9 +37,9 @@ import time
 import cv2
 import numpy as np
 
-from camera.common import (CALIB, ESTIMATE_PORT, RECORDINGS, TruthListener, centroids, load_calib, load_tetra3,
-                           pointing_error_arcsec, roll_error_deg, warp_points)
-from sim.sky import SkyRenderer, checkerboard, random_attitude, to_radecroll
+from camera.common import (BRIDGE_PORT, CALIB, ESTIMATE_PORT, RECORDINGS, TRUTH_PORT, TruthListener, centroids,
+                           load_calib, load_tetra3, pointing_error_arcsec, roll_error_deg, warp_points)
+from sim.sky import SkyRenderer, checkerboard, from_radecroll, random_attitude, to_radecroll
 
 
 # ---------- frame sources: read() -> (t, gray, truth_dict_or_None) ----------
@@ -83,6 +86,47 @@ class SimSource:
         pass
 
 
+class FollowSource:
+    """Redraws whatever sim.live is showing right now, from its truth packets (attitude,
+    body rate, exposure, glare). No camera: the solver sees exactly the screen pixels, and
+    console flare / tumble commands to sim.live reach it. Waits for each new sim frame."""
+
+    def __init__(self, a):
+        self.a = a
+        self.truth = TruthListener(a.truth_port)
+        print(f"[follow-sim] waiting for sim.live truth on UDP {a.truth_port} ...")
+        first = self.truth.wait(timeout=1e9)
+        self.sw, self.sh, self.fov = first["w"], first["h"], first["fov"]
+        self.sky = SkyRenderer(self.sw, self.sh, self.fov)
+        self.H = None
+        self.last_frame = None
+        print(f"[follow-sim] following sim.live: {self.sw}x{self.sh}, FOV {self.fov} deg")
+
+    def read(self):
+        while True:
+            tr = self.truth.latest()
+            if tr is not None and tr.get("frame") != self.last_frame:
+                break
+            time.sleep(0.005)
+        self.last_frame = tr.get("frame")
+        if tr.get("mode") == "calib":
+            return time.time(), np.zeros((self.sh, self.sw), np.uint8), tr
+        if (tr["w"], tr["h"], tr["fov"]) != (self.sw, self.sh, self.fov):
+            self.sw, self.sh, self.fov = tr["w"], tr["h"], tr["fov"]
+            self.sky = SkyRenderer(self.sw, self.sh, self.fov)
+        att = from_radecroll(tr["ra"], tr["dec"], tr["roll"])
+        omega = np.radians(tr.get("omega") or [0.0, 0.0, 0.0])
+        img = self.sky.render(att, omega if np.any(omega) else None, tr.get("exposure", 0.0))
+        if tr.get("glare"):
+            self.sky.glare(img, corner=tuple(tr.get("glare_corner") or (1.0, 1.0)))
+        if tr.get("flash"):
+            img += float(tr["flash"])   # flare whiteout: the sensor is blinded
+        return time.time(), SkyRenderer.to_u8(img), tr
+
+    def close(self):
+        pass
+
+
 class CameraSource:
     def __init__(self, a):
         from camera.capture import Camera
@@ -118,7 +162,7 @@ class Solver:
         self.t3 = load_tetra3()
 
     def solve(self, gray, fov):
-        c_cam = centroids(gray, max_returned=self.a.max_centroids)
+        c_cam = centroids(gray, max_returned=self.a.max_centroids, max_area=self.a.max_area)
         if self.src.H is not None:
             c = warp_points(c_cam, self.src.H)
             keep = (c[:, 0] > -0.5) & (c[:, 0] < self.src.sw - 0.5) & (c[:, 1] > -0.5) & (c[:, 1] < self.src.sh - 0.5)
@@ -163,6 +207,8 @@ def main():
     src_g = ap.add_argument_group("source")
     src_g.add_argument("--sim", action="store_true", help="render frames from sim.sky instead of a camera")
     src_g.add_argument("--sim-camera", action="store_true", help="with --sim: pass frames through camera.fakecam")
+    src_g.add_argument("--follow-sim", action="store_true",
+                       help="no camera: redraw the frames the running sim.live shows (from its truth packets)")
     src_g.add_argument("--index", type=int, default=0)
     src_g.add_argument("--cam-w", type=int, default=1920)
     src_g.add_argument("--cam-h", type=int, default=1080)
@@ -181,15 +227,20 @@ def main():
     sol.add_argument("--fov", type=float, default=50.0, help="screen FOV, deg (overridden by sim truth packets)")
     sol.add_argument("--fov-max-error", type=float, default=2.0)
     sol.add_argument("--max-centroids", type=int, default=60)
+    sol.add_argument("--max-area", type=int, default=100,
+                     help="largest blob (px) kept as a star; tetra3 default 100. 5000 keeps motion-blur "
+                          "streaks ('tetra3-tuned' in ml/out/benchmark.md: 100%% solves at 10 deg/s)")
     sol.add_argument("--timeout-ms", type=int, default=500)
     sol.add_argument("--min-matches", type=int, default=8)
     sol.add_argument("--prob-max", type=float, default=1e-6)
     sol.add_argument("--rmse-max", type=float, default=900.0, help="arcsec, for the confidence score")
     io = ap.add_argument_group("io")
-    io.add_argument("--truth-port", type=int, default=5005)
+    io.add_argument("--truth-port", type=int, default=TRUTH_PORT)
     io.add_argument("--no-truth", action="store_true")
     io.add_argument("--latency", type=float, default=0.08, help="camera latency for truth pairing, s")
-    io.add_argument("--estimate-port", type=int, default=ESTIMATE_PORT)
+    io.add_argument("--estimate-port", type=int, default=ESTIMATE_PORT, help="estimates for the dashboard")
+    io.add_argument("--bridge-port", type=int, default=BRIDGE_PORT,
+                    help="same estimates for bridge.serial_bridge (0 = don't send)")
     io.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = run forever)")
     io.add_argument("--show", action="store_true", help="window with centroids / matches")
     io.add_argument("--save-shot", nargs="?", const="auto", default=None,
@@ -197,7 +248,7 @@ def main():
     io.add_argument("--quiet", action="store_true", help="print only every 10th frame")
     a = ap.parse_args()
 
-    src = SimSource(a) if a.sim else CameraSource(a)
+    src = FollowSource(a) if a.follow_sim else SimSource(a) if a.sim else CameraSource(a)
     solver = Solver(a, src)
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0}
@@ -226,7 +277,10 @@ def main():
                 if truth:
                     msg["err_arcsec"] = round(pointing_error_arcsec(msg["ra"], msg["dec"], truth["ra"], truth["dec"]), 1)
                     msg["roll_err_deg"] = round(roll_error_deg(msg["roll"], truth["roll"]), 3)
-            out.sendto(json.dumps(msg).encode(), ("127.0.0.1", a.estimate_port))
+            pkt = json.dumps(msg).encode()
+            out.sendto(pkt, ("127.0.0.1", a.estimate_port))
+            if a.bridge_port:
+                out.sendto(pkt, ("127.0.0.1", a.bridge_port))
 
             stats["n"] += 1
             stats["nc"].append(len(c_scr))

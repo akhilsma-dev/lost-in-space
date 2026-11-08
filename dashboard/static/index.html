@@ -10,6 +10,7 @@
 <header id="top">
   <div class="brand"><span class="logo">✦</span> LOST IN SPACE <span class="sub">MISSION CONTROL</span></div>
   <div class="feeds">
+    <button id="voiceChip" class="chip voice off" type="button">VOICE</button>
     <span id="modeLabel" class="chip">—</span>
     <span class="feed" id="fTruth"><i></i>TRUTH <b>—</b></span>
     <span class="feed" id="fEst"><i></i>ESTIMATE <b>—</b></span>
@@ -21,6 +22,7 @@
   <section id="viewPanel" class="panel">
     <div class="ptitle"><span>CAMERA VIEW</span><span id="viewNote" class="dim">screen in the box · overlay from the ESTIMATED attitude</span></div>
     <canvas id="view"></canvas>
+    <div id="caption" aria-live="polite"></div>
     <div class="legend">
       <span><i style="background:var(--cent)"></i>detected blob</span>
       <span><i style="background:var(--lock)"></i>identified star</span>
@@ -79,6 +81,11 @@
     <canvas id="chart"></canvas>
   </section>
 
+  <section id="consolePanel" class="panel" hidden>
+    <div class="ptitle"><span>MISSION CONSOLE</span><span class="dim">virtual board · drag the knob, hit FLARE</span></div>
+    <iframe id="consoleFrame" title="virtual mission console"></iframe>
+  </section>
+
   <section id="ratePanel" class="panel">
     <div class="ptitle"><span>SOLVE RATE</span><span id="srTitle" class="dim">tetra3 alone vs tetra3 + CNN</span></div>
     <div id="srRows"></div>
@@ -86,6 +93,7 @@
   </section>
 </main>
 <div id="fsHint">press F for full screen</div>
+<script src="/voice.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

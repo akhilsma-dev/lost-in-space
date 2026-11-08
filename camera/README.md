@@ -2,7 +2,7 @@
 
 ```
 sim.live (screen) --> webcam --> centroids --(homography)--> screen px --> tetra3 --> LOCK/LOST
-      | truth UDP 5005                                                         | estimate UDP 5008
+      | truth UDP 5009 (dashboard: 5005)                                       | estimate UDP 5008 (dashboard) + 5007 (bridge)
       +-----------------------------> solve_live prints error vs truth <-------+
 ```
 
@@ -55,7 +55,11 @@ On macOS the terminal / app running Python needs camera permission
 (System Settings > Privacy & Security > Camera), otherwise OpenCV prints
 `not authorized to capture video` and the camera does not open.
 
-## Output (UDP 127.0.0.1:5008, one JSON per frame)
+No camera at all: `--follow-sim` redraws exactly what the running `sim.live` shows (attitude, tumble blur,
+glare) from its truth packets, so console flare / tumble reach the solver. `demo/fake_demo.sh` runs the whole
+chain this way. `--max-area 5000` keeps motion-blur streaks (holds LOCK to 20 deg/s; default 100 loses it near 5 deg/s).
+
+## Output (UDP 127.0.0.1:5008 for the dashboard and 5007 for the bridge, one JSON per frame)
 
 `{"t","ra","dec","roll","fov","status","confidence","matches","prob","rmse","solve_ms","n_centroids","centroids":[[x,y],...],"truth","err_arcsec","roll_err_deg"}`
 

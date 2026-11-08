@@ -7,6 +7,7 @@ errors / lock state / overlays, and serves a full-screen browser page on http://
   .venv/bin/python -m dashboard --mock          synthesise both feeds (nothing else needed)
   .venv/bin/python -m dashboard --mock-est      truth from a running sim.live, estimates synthesised
   add --open to launch the page full screen (Chrome kiosk if installed, else default browser)
+  add --console-url http://localhost:8081/ to show the virtual console (no-board demo) in a panel
 
 Stdlib HTTP + Server-Sent Events; only numpy / scipy / opencv from the existing venv.
 """
@@ -154,6 +155,8 @@ class FrameRenderer(threading.Thread):
             img = sk.render(att, omega, float(truth.get("exposure", 0.1)) if omega is not None else 0.0)
             if truth.get("glare"):
                 sk.glare(img, corner=(1.0, 1.0))
+            if truth.get("flash"):
+                img += float(truth["flash"])   # flare whiteout, as on the sim screen
             img = SkyRenderer.to_u8(img)
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 82])
         if ok:
@@ -277,7 +280,7 @@ class Hub(threading.Thread):
                 "est": {"ok": es is not None, "hz": self.est.hz(), "age": _age(self.est), "error": self.est.error,
                         "mock": bool((es or {}).get("mock"))},
             },
-            "truth": (tr or paired) and {k: (tr or paired).get(k) for k in ("ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "mode", "w", "h", "frame")},
+            "truth": (tr or paired) and {k: (tr or paired).get(k) for k in ("ra", "dec", "roll", "fov", "rate_dps", "exposure", "glare", "flash", "mode", "w", "h", "frame")},
             "paired": paired and {k: paired.get(k) for k in ("ra", "dec", "roll")},
             "est": es and {k: es.get(k) for k in ("ra", "dec", "roll", "fov", "status", "confidence", "matches",
                                                   "prob", "rmse", "solve_ms", "n_centroids", "frontend")},
@@ -310,7 +313,7 @@ def _json_default(o):
 
 
 # ---------------------------------------------------------------- HTTP
-def make_handler(hub):
+def make_handler(hub, config):
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -334,12 +337,16 @@ def make_handler(hub):
             if path == "/state":
                 with hub.cond:
                     return self._send(200, hub.snapshot.encode(), "application/json")
+            if path == "/config":
+                return self._send(200, json.dumps(config).encode(), "application/json")
             if path == "/frame.jpg":
                 j = hub.frames.jpeg
                 return self._send(200, j, "image/jpeg") if j else self._send(404, b"", "text/plain")
             f = (STATIC / path.lstrip("/")).resolve()
             if STATIC in f.parents and f.is_file():
-                ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css"}.get(
+                ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
+                         ".json": "application/json", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+                         ".wav": "audio/wav"}.get(
                     f.suffix, "application/octet-stream")
                 return self._send(200, f.read_bytes(), ctype)
             self._send(404, b"not found", "text/plain")
@@ -374,7 +381,8 @@ def open_fullscreen(url):
     if pathlib.Path(chrome).exists():
         prof = pathlib.Path.home() / ".cache" / "lis-dashboard-chrome"
         subprocess.Popen([chrome, "--kiosk", f"--app={url}", f"--user-data-dir={prof}",
-                          "--no-first-run", "--disable-session-crashed-bubble"],
+                          "--no-first-run", "--disable-session-crashed-bubble",
+                          "--autoplay-policy=no-user-gesture-required"],   # voice callouts without a click
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     elif shutil.which("chromium"):
         subprocess.Popen(["chromium", "--kiosk", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -394,6 +402,9 @@ def main():
     ap.add_argument("--solve-rate", default=str(HERE / "solve_rate.json"),
                     help="JSON with the tetra3-alone vs tetra3+CNN result (see solve_rate.example.json)")
     ap.add_argument("--open", action="store_true", help="open the page full screen")
+    ap.add_argument("--console-url", default=None,
+                    help="show the virtual console (bridge.serial_bridge --fake --web) in a panel, "
+                         "e.g. http://localhost:8081/")
     a = ap.parse_args()
 
     if a.mock:
@@ -414,7 +425,7 @@ def main():
 
     hub = Hub(truth, est, a.solve_rate, label)
     hub.start()
-    srv = Server(("127.0.0.1", a.port), make_handler(hub))
+    srv = Server(("127.0.0.1", a.port), make_handler(hub, {"console_url": a.console_url}))
     url = f"http://localhost:{a.port}/"
     print(f"[dashboard] {label}: {url}  (truth UDP {a.truth_port}, estimates UDP {a.est_port})")
     if a.open:

@@ -11,7 +11,10 @@ let lastMsg = 0;       // wall time we last heard from the server
 const frame = { img: null, id: -1, loading: false };
 
 // ---------------------------------------------------------------- data in
-function onState(txt) { S = JSON.parse(txt); lastMsg = performance.now(); updateText(); maybeLoadFrame(); }
+function onState(txt) {
+  S = JSON.parse(txt); lastMsg = performance.now(); updateText(); maybeLoadFrame();
+  if (typeof Voice !== "undefined") Voice.update(S);
+}
 function connect() {
   if (new URLSearchParams(location.search).has("poll")) {   // plain polling (headless screenshots, picky proxies)
     const tick = () => fetch("/state").then((r) => r.text()).then(onState).catch(() => {}).finally(() => setTimeout(tick, 66));
@@ -337,11 +340,22 @@ function frameLoop(t) {
   requestAnimationFrame(frameLoop);
 }
 document.addEventListener("keydown", (e) => {
-  if (e.key === "f" || e.key === "F") {
+  if ((e.key === "f" || e.key === "F") && !e.metaKey && !e.ctrlKey) {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
     else document.exitFullscreen();
   }
 });
 document.addEventListener("fullscreenchange", () => document.body.classList.toggle("fs", !!document.fullscreenElement));
+function loadConfig() {
+  fetch("/config").then((r) => r.json()).then((c) => {
+    if (!c.console_url) return;
+    const u = new URL(c.console_url, location.href);
+    u.searchParams.set("embed", "1");
+    $("consoleFrame").src = u.href;
+    $("consolePanel").hidden = false;
+    document.body.classList.add("with-console");
+  }).catch(() => {});
+}
+loadConfig();
 connect();
 requestAnimationFrame(frameLoop);
