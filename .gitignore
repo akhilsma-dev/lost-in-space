@@ -8,3 +8,6 @@ recordings/
 ml/out/*_stdout.txt
 data/stellarium/images/
 data/*.bsp
+
+# secrets
+.env

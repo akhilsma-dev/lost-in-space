@@ -57,7 +57,7 @@ until the page is clicked once (the chip says so). `dashboard --open` starts Chr
 into commands with `voice/commands.py` (regex, no network) and forwards only those: sim commands to UDP 5006,
 solver commands (`whereami`, `detector …`, `camera …`) to `camera.solve_live`'s UDP 5011. The dashboard's
 **COMMAND** button (bottom right) opens the panel: a microphone plus a text box. Typed commands always work;
-speech needs `ELEVENLABS_API_KEY` in the voice server's environment and `pip install elevenlabs sounddevice`.
+speech needs `ELEVENLABS_API_KEY` (put it in `.env` in the project root: `cp .env.example .env`; `fake_demo.sh` loads it) and `pip install elevenlabs sounddevice`.
 
 | say / type | command | goes to |
 |---|---|---|

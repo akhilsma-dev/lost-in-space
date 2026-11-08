@@ -24,6 +24,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# secrets (ELEVENLABS_API_KEY for spoken voice commands): .env in the project root, git-ignored; see .env.example
+if [[ -f .env ]]; then set -a; . ./.env; set +a; fi
+
 PY="${PYTHON:-}"
 if [[ -z "$PY" ]]; then
   if [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python; fi
