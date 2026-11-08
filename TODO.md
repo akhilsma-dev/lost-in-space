@@ -32,7 +32,7 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [x] Synthetic patch generator (blur, glare, hot pixels, planet)
 - [x] StarNet CNN trained (`ml/weights/starnet.pt`), `ml.detect.detect()` API
 - [x] Benchmark: 100% solve at 0–20°/s vs tetra3 alone 11% / tuned 67% (`ml/out/benchmark.md`, `solve_rate.png`)
-- [ ] Wire `ml.detect` into `camera/solve_live.py` (toggle classical vs StarNet live)
+- [x] Wire `ml.detect` into `camera/solve_live.py`: `--detector starnet` (`demo/fake_demo.sh --starnet`); ~150 ms/frame on MPS
 - [ ] Test StarNet on real webcam frames (answers the "trained on your own sim" question)
 - [ ] Fine-tune on real camera patches if real-frame results are weak
 - [ ] Unknown-object list (blobs StarNet keeps that tetra3 doesn't match)

@@ -160,8 +160,34 @@ class Solver:
     def __init__(self, a, src):
         self.a, self.src = a, src
         self.t3 = load_tetra3()
+        self.starnet = None
+        if a.detector == "starnet":
+            from ml import detect
+            detect.load()
+            detect.star_centroids(np.zeros((64, 64), np.uint8))   # warm-up: the first call is ~2 s on MPS
+            self.starnet = detect
+            print(f"[starnet] star finder on {detect._dev}")
+
+    def starnet_centroids(self, gray):
+        """StarNet works in screen pixels (that is what it was trained on): warp the camera frame to
+        the screen first if there is a homography. Returns (screen xy, camera xy), brightest first."""
+        H = self.src.H
+        img = gray if H is None else cv2.warpPerspective(gray, H, (self.src.sw, self.src.sh))
+        yx = self.starnet.star_centroids(img)
+        c = (np.asarray(yx, np.float64).reshape(-1, 2) - 0.5)[:, ::-1].copy()  # tetra3 -> OpenCV convention
+        return c, (c if H is None else warp_points(c, np.linalg.inv(H)))
 
     def solve(self, gray, fov):
+        if self.starnet is not None:
+            t0 = time.perf_counter()
+            c, c_cam = self.starnet_centroids(gray)
+            self.detect_ms = (time.perf_counter() - t0) * 1000
+            fov_kw = {"fov_estimate": fov, "fov_max_error": self.a.fov_max_error}
+            t0 = time.perf_counter()
+            res = (self.t3.solve_from_centroids(c[:, ::-1], (self.src.sh, self.src.sw), return_matches=True,
+                                                solve_timeout=self.a.timeout_ms, **fov_kw)
+                   if len(c) >= 4 else {"RA": None})
+            return c, c_cam, res, (time.perf_counter() - t0) * 1000
         c_cam = centroids(gray, max_returned=self.a.max_centroids, max_area=self.a.max_area)
         if self.src.H is not None:
             c = warp_points(c_cam, self.src.H)
@@ -226,6 +252,8 @@ def main():
     sol = ap.add_argument_group("solver")
     sol.add_argument("--fov", type=float, default=50.0, help="screen FOV, deg (overridden by sim truth packets)")
     sol.add_argument("--fov-max-error", type=float, default=2.0)
+    sol.add_argument("--detector", choices=["tetra3", "starnet"], default="tetra3",
+                     help="star finder before tetra3's pattern match: tetra3's blob finder, or StarNet (ml/)")
     sol.add_argument("--max-centroids", type=int, default=60)
     sol.add_argument("--max-area", type=int, default=100,
                      help="largest blob (px) kept as a star; tetra3 default 100. 5000 keeps motion-blur "
@@ -270,7 +298,8 @@ def main():
                    "prob": float(res["Prob"]) if solved else None,
                    "rmse": float(res["RMSE"]) if solved else None, "solve_ms": round(ms, 1),
                    "n_centroids": len(c_scr), "centroids": np.round(c_scr[:100], 2).tolist(),
-                   "truth": truth, "err_arcsec": None, "roll_err_deg": None}
+                   "truth": truth, "err_arcsec": None, "roll_err_deg": None, "detector": a.detector,
+                   "detect_ms": round(getattr(solver, "detect_ms", 0.0), 1) if solver.starnet else None}
             if solved:
                 msg.update(ra=float(res["RA"]), dec=float(res["Dec"]), roll=float(res["Roll"]),
                            fov=float(res["FOV"]))
@@ -296,6 +325,7 @@ def main():
                     + (f"RA {msg['ra']:7.2f} Dec {msg['dec']:6.2f} Roll {msg['roll']:6.1f} "
                        f"Prob {msg['prob']:.0e} RMSE {msg['rmse']:5.0f}\"" if solved else "no solution".ljust(62))
                     + f" | {ms:4.0f} ms"
+                    + (f" (+StarNet {solver.detect_ms:4.0f} ms)" if solver.starnet else "")
                     + (f" | err {msg['err_arcsec']:6.0f}\" roll {msg['roll_err_deg']:+.2f} deg"
                        if msg["err_arcsec"] is not None else ""))
             if not a.quiet or stats["n"] % 10 == 1:

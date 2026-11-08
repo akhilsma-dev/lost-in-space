@@ -6,7 +6,8 @@ Files: `firmware/console/console.ino` (board), `bridge/serial_bridge.py` (laptop
 ## 0. Whole demo, one command (no camera, no board)
 
 ```bash
-demo/fake_demo.sh            # --board for the real console, --classic for plain tetra3 (loses lock when tumbling)
+demo/fake_demo.sh            # --board for the real console, --classic for plain tetra3 (loses lock when tumbling),
+                             # --starnet for our CNN star finder (~150 ms/frame on Apple GPU, ~5 solves/s)
 ```
 
 Starts `sim.live`, the dashboard (http://localhost:8080), `camera.solve_live --follow-sim` (estimates on

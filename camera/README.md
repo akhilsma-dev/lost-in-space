@@ -57,7 +57,7 @@ On macOS the terminal / app running Python needs camera permission
 
 No camera at all: `--follow-sim` redraws exactly what the running `sim.live` shows (attitude, tumble blur,
 glare) from its truth packets, so console flare / tumble reach the solver. `demo/fake_demo.sh` runs the whole
-chain this way. `--max-area 5000` keeps motion-blur streaks (holds LOCK to 20 deg/s; default 100 loses it near 5 deg/s).
+chain this way. `--detector starnet` uses our CNN (`ml/`) as the star finder. `--max-area 5000` keeps motion-blur streaks (holds LOCK to 20 deg/s; default 100 loses it near 5 deg/s).
 
 ## Output (UDP 127.0.0.1:5008 for the dashboard and 5007 for the bridge, one JSON per frame)
 
