@@ -7,7 +7,7 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [x] Star catalogue, constellation lines, star names (`data/`)
 - [x] tetra3 database built (`data/tetra3_wide.npz`, 30–70° FOV, mag ≤ 5.5)
 - [x] Wiring guide + diagram (`docs/WIRING.md`)
-- [ ] Download DE421 ephemeris (`de421.bsp`) before venue Wi-Fi dies
+- [ ] Download DE421 ephemeris (`de421.bsp`) before venue Wi-Fi dies: `.venv/bin/python -c "from skyfield.api import Loader; Loader('data')('de421.bsp')"` (needed by `--planets` / `--nav`)
 - [ ] Confirm hackathon rules on AI-assisted coding / disclosure
 - [ ] Confirm judging time + Devpost deadline
 
@@ -17,7 +17,7 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [x] Calibration checkerboard mode
 - [x] Truth on UDP 5005, commands on UDP 5006
 - [x] Verified: tetra3 solves 15/15 static frames (~70″)
-- [ ] Planets / Sun / Moon from DE421
+- [x] Planets / Moon from DE421: `sim.live --planets` (hidden position; the Sun is not drawn)
 
 ## Camera + solve (`camera/`)
 - [x] Capture with exposure/focus locking attempts
@@ -57,7 +57,7 @@ Status as of 2026-11-07. Rule: work on a branch, a human reviews it, then it goe
 - [ ] Test on the demo laptop with the real camera feed
 
 ## Stretch
-- [ ] Position from 3+ planets with error ellipsoid
+- [x] Position from 3+ planets with error ellipsoid: `demo/fake_demo.sh --nav` (live, dashboard POSITION panel); offline benchmark `camera/navigate.py --bench` (~10,000 km clean, ~23,000 km through the fake webcam)
 - [ ] Earth mode: accelerometer + time → lat/long
 - [ ] Stellarium as an independent sky source
 

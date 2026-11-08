@@ -73,6 +73,17 @@
       <div class="ptitle"><span>SPACECRAFT</span><span class="dim"><i class="sw ghost"></i>truth <i class="sw est"></i>estimate</span></div>
       <canvas id="att3d"></canvas>
     </section>
+
+    <section class="panel grow" id="navPanel" hidden>
+      <div class="ptitle"><span>POSITION <span id="navHold"></span></span><span id="navNote" class="dim">from planets</span></div>
+      <div class="navread">
+        <div><label>FROM SUN</label><span id="navR" class="num">—</span></div>
+        <div><label>TO EARTH</label><span id="navEarth" class="num">—</span><span id="navEarthSig" class="sub"></span></div>
+        <div><label>ERROR vs TRUTH</label><span id="navErr" class="num">—</span><span id="navSig" class="sub"></span></div>
+      </div>
+      <div id="navCalc" class="navcalc"></div>
+      <canvas id="navmap"></canvas>
+    </section>
   </aside>
 
   <section id="chartPanel" class="panel">

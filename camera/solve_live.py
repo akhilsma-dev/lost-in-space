@@ -30,6 +30,16 @@ Truth: sim.live publishes truth on UDP 5009 (the dashboard has 5005); each frame
 paired with the truth packet received closest to (capture time - --latency) and the
 pointing error is printed. In --sim and --follow-sim modes truth is exact.
 
+Position from planets (--nav; run sim.live --planets): after each LOCK, blobs that are not
+catalogue stars become planet candidates (camera.navigate); their inertial directions build up
+over frames and a background thread fixes the heliocentric position with an error ellipsoid.
+--nav-scan S also drives the scan: every S seconds it sends sim.live "point <ra> <dec> <roll>"
+(UDP 5006) for the next of 8 pointings along the ecliptic. Each estimate packet then carries
+  "nav": {"status": "collecting"|"no fix"|"fix", "n_cand", "jd", and with a fix: "pos_km",
+          "cov_km2", "axes_km" (1-sigma), "bodies", "resid_rms_arcsec", "r_au", "earth_km",
+          "earth_sigma_km", "age_s", "err_km" (vs the sim's hidden position, if known)}
+      .venv/bin/python -m camera.solve_live --follow-sim --nav --nav-scan 3
+
 Output: one JSON line per frame on UDP 127.0.0.1:5008 (dashboard), and the same
 line on 5007 (bridge.serial_bridge -> console OLED/LED/servos; --bridge-port 0 = off)
   {"t","ra","dec","roll","fov","status","stage","confidence","matches","prob","rmse","solve_ms",
@@ -137,7 +147,9 @@ class FollowSource:
             self.sky = SkyRenderer(self.sw, self.sh, self.fov)
         att = from_radecroll(tr["ra"], tr["dec"], tr["roll"])
         omega = np.radians(tr.get("omega") or [0.0, 0.0, 0.0])
-        img = self.sky.render(att, omega if np.any(omega) else None, tr.get("exposure", 0.0))
+        from sim.planets import extra_from_list   # planets on screen (sim.live --planets)
+        img = self.sky.render(att, omega if np.any(omega) else None, tr.get("exposure", 0.0),
+                              extra=extra_from_list(tr.get("planets")))
         if tr.get("glare"):
             self.sky.glare(img, corner=tuple(tr.get("glare_corner") or (1.0, 1.0)))
         if tr.get("flash"):
@@ -269,6 +281,11 @@ class Acquisition:
         self.w = np.zeros(3)       # body rate estimate, rad/s
         self.t_prop = None         # time track was last propagated to
         self.lost_t = None         # when lock was last lost (or start), for recovery
+        self.jump_ok_until = -1e18 # a commanded attitude change (nav-scan 'point') is expected until then
+
+    def expect_jump(self, t, window=1.0):
+        """We commanded the attitude (sim 'point'): the next jump is ours, not a lost track."""
+        self.jump_ok_until = t + window
 
     def reset(self):
         self.k, self.track, self.t_ver, self.prev, self.t_prop = 0, None, None, None, None
@@ -293,7 +310,9 @@ class Acquisition:
         if att is not None:
             # body rate from consecutive good solves (frame-to-frame, so the tumble changing is followed);
             # jump = how far this solve is from the previous one carried forward at the old rate
-            if self.prev is not None and 0.02 < t - self.prev[0] < 0.6:
+            if t <= self.jump_ok_until:
+                self.w = np.zeros(3)                          # commanded repoint: carry on from the new attitude
+            elif self.prev is not None and 0.02 < t - self.prev[0] < 0.6:
                 dt = t - self.prev[0]
                 jump = self.angle_deg(self.prev[1] * type(att).from_rotvec(self.w * dt), att)
                 w = (self.prev[1].inv() * att).as_rotvec() / dt
@@ -540,8 +559,23 @@ def main():
     rec.add_argument("--detumble-accel", type=float, default=4.0, help="detumble ramp, deg/s per s")
     rec.add_argument("--slew-rate", type=float, default=6.0, help="search slew rate, deg/s")
     rec.add_argument("--slew-time", type=float, default=3.0, help="search slew duration, s")
-    rec.add_argument("--sim-cmd-port", type=int, default=5006, help="sim.live command port for recovery")
     sol.add_argument("--rmse-max", type=float, default=900.0, help="arcsec, for the confidence score")
+    nav = ap.add_argument_group("position from planets")
+    nav.add_argument("--nav", action="store_true", help="find planets after each lock and fix the position")
+    nav.add_argument("--nav-scan", type=float, default=0.0,
+                     help="drive sim.live through 8 ecliptic pointings, this many s each (0 = don't)")
+    nav.add_argument("--nav-sigma", type=float, default=10.0, help="planet direction error, arcsec (ellipsoid)")
+    nav.add_argument("--nav-memory", type=float, default=0.0,
+                     help="forget candidates not seen for this long, s (0 = 1.5 scan cycles with --nav-scan, else 60)")
+    nav.add_argument("--nav-jd", type=float, default=2461352.5,
+                     help="epoch (TDB JD) if the truth packet carries none; sim.live --planets default")
+    nav.add_argument("--nav-every", type=float, default=0.5,
+                     help="look for planets in at most one locked frame per this many s (planets barely move)")
+    nav.add_argument("--nav-reset-on-blind", action="store_true",
+                     help="forget planet sightings and the fix when the sensor is blinded (whited-out frame, "
+                          "e.g. a flare): pairs with sim.live --flare-moves")
+    nav.add_argument("--cmd-port", type=int, default=5006,
+                     help="sim.live command port (for --nav-scan and the recovery maneuvers)")
     io = ap.add_argument_group("io")
     io.add_argument("--truth-port", type=int, default=TRUTH_PORT)
     io.add_argument("--no-truth", action="store_true")
@@ -565,15 +599,18 @@ def main():
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
     recovery = None
-    if a.recover:
+    if a.recover and a.nav and a.nav_scan > 0:
+        print("[recover] off: --nav-scan drives the sim's attitude")
+    elif a.recover:
         if isinstance(src, SimSource):
             send_rate = src.set_rate
         else:
             def send_rate(r):
-                out.sendto(f"rate {r:g}".encode(), ("127.0.0.1", a.sim_cmd_port))
+                out.sendto(f"rate {r:g}".encode(), ("127.0.0.1", a.cmd_port))
         recovery = Recovery(a, send_rate)
     t_start, t_unlock, stage_prev = None, None, None
     frames = FrameSender(a.frame_port, a.frame_w, a.frame_hz) if a.frame_port else None
+    navi, scan_i, scan_t, nav_print, nav_t, was_blind = None, 0, 0.0, 0.0, 0.0, False
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0, "acq": []}
     shot, shot_lock = None, False
     try:
@@ -615,6 +652,42 @@ def main():
                 if truth:
                     msg["err_arcsec"] = round(pointing_error_arcsec(msg["ra"], msg["dec"], truth["ra"], truth["dec"]), 1)
                     msg["roll_err_deg"] = round(roll_error_deg(msg["roll"], truth["roll"]), 3)
+            if a.nav:
+                # a whited-out frame (flare) is something the camera itself sees; with --nav-reset-on-blind
+                # we assume it may have left us anywhere and start the position search again
+                blind = float(gray.mean()) > 180.0
+                if blind and a.nav_reset_on_blind and navi is not None and not was_blind:
+                    navi.reset()
+                    print("[nav] sensor blinded: forgetting sightings, searching for the position again")
+                was_blind = blind
+                if a.nav_scan > 0 and status == "LOCK" and time.time() - scan_t > a.nav_scan:   # next scan pointing
+                    solver.acq.expect_jump(t)          # (only while locked: no scanning while lost)
+                    from camera.navigate import ecliptic_scan_radec
+                    ra_, dec_, roll_ = ecliptic_scan_radec(scan_i)
+                    out.sendto(f"point {ra_:.4f} {dec_:.4f} {roll_:.3f}".encode(), ("127.0.0.1", a.cmd_port))
+                    scan_i, scan_t = scan_i + 1, time.time()
+                if status == "LOCK":
+                    if navi is None:
+                        from camera.navigate import CandidateFinder, LiveNavigator
+                        navi = LiveNavigator(CandidateFinder(src.sw, src.sh, fov, src.H), a.nav_jd,
+                                             sigma_arcsec=a.nav_sigma,
+                                             memory_s=a.nav_memory or (12 * a.nav_scan if a.nav_scan > 0 else 60.0))
+                        print(f"[nav] navigator ready ({src.sw}x{src.sh}, FOV {fov} deg)")
+                    if truth and truth.get("jd"):
+                        navi.jd = truth["jd"]   # the spacecraft clock; the sim's epoch
+                    if time.time() - nav_t >= a.nav_every:   # the candidate pass costs ~100 ms
+                        nav_t = time.time()
+                        navi.observe(gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)
+                msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
+                nv = msg["nav"]
+                if time.time() - nav_print > 5:
+                    nav_print = time.time()
+                    print(f"[nav] {nv['status']}, {nv['n_cand']} candidates"
+                          + (f" | {nv['r_au']:.4f} AU from the Sun, Earth {nv['earth_km'] / 1e6:.3f} Mkm "
+                             f"+/- {nv['earth_sigma_km']:,.0f} km, 1-sigma {nv['axes_km'][0]:,.0f} km, "
+                             f"bodies {'+'.join(nv['bodies'])}"
+                             + (f", ERROR {nv['err_km']:,.0f} km" if 'err_km' in nv else "")
+                             if nv.get("pos_km") else ""))
             pkt = json.dumps(msg).encode()
             out.sendto(pkt, ("127.0.0.1", a.estimate_port))
             if a.bridge_port:

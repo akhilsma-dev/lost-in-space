@@ -84,7 +84,9 @@ Lost-in-space acquisition takes a believable 5-6 s and every step is real work:
 | `SEARCH SLEW` | recovery: no stable lock for `--recover-after` (8 s) at rest and no candidate being verified: `--slew-rate` (6 deg/s) for `--slew-time` (3 s) to a new patch of sky, then rate 0 and the clock restarts. Repeats while lost |
 
 Recovery (`--recover`, default on; `--no-recover` removes it) sends only the sim's existing `rate <dps>`
-command to UDP 5006 (`--sim-cmd-port`; with `--sim` it drives the internal sim). It never acts while LOCKed,
+command to UDP 5006 (`--cmd-port`; with `--sim` it drives the internal sim). It is off when `--nav --nav-scan`
+drives the sim's attitude; the scan then only steps while LOCKed, and each commanded `point` is an expected
+jump (it does not count as LOST). It never acts while LOCKed,
 so tumble dialled in on the console knob during LOCK is left alone. The recovery clock runs from the last
 *stable* lock (held `--stable-lock` 3 s) so a flapping lock still gets a maneuver. The knob on the console keeps
 its position after a detumble (the sim then tumbles at 0 until the knob is moved again).
@@ -165,3 +167,146 @@ the macOS camera prompt and stay `not authorized`.
   than assuming. Fallback if nothing locks: screen at 100% brightness, let
   tetra3's local background subtraction absorb the auto-gain, `--avg N` for
   static scenes, or lock the camera with its vendor app / `uvc-util` first.
+
+## Position from planets (`camera/navigate.py`, offline proof)
+
+Stars give attitude only. Bodies in the Solar System are close enough to show parallax:
+each identified planet at its known position X_i (JPL DE421) gives a line of sight u_i through
+the spacecraft, so three or more give the position P.
+
+```
+# one-time: JPL ephemeris, ~17 MB, gitignored
+.venv/bin/python -c "from skyfield.api import Loader; Loader('data')('de421.bsp')"
+
+.venv/bin/python -m sim.planets                          # sanity check: the sky seen from Earth
+.venv/bin/python -m camera.navigate --bench              # 24 positions, geometry + rendered, ~1 min
+.venv/bin/python -m camera.navigate --bench --mode geometry --n 200
+.venv/bin/python -m camera.navigate --bench --mode rendered --n 6 --save-frames
+.venv/bin/python -m camera.navigate --bench --mode rendered --noise 3 --tag noise3
+.venv/bin/python -m camera.navigate --bench --mode rendered --sim-camera --rendered-sigma 10 --tag simcam
+```
+
+Writes `camera/out/nav_bench.md` (summary + per-position table), `nav_bench.csv`, `nav_bench.png`
+(`nav_bench_<tag>.*` with `--tag`).
+
+Pieces:
+- `sim/planets.py`: `Ephemeris.positions(jd)` (heliocentric ICRF km for the Sun, Mercury, Venus,
+  Earth, Moon, Mars, and the Jupiter and Saturn barycentres), `Ephemeris.apparent(P, jd)` (unit direction
+  from P with light time, distance, magnitude H + 5 log10(r Δ) + a crude phase term).
+- `SkyRenderer.render(att, ..., extra=(dirs, mags))` draws extra point sources in the stars' blob style.
+  Without `extra` the output is bit-identical to before.
+- `camera/navigate.py`:
+  - `pixel_rays`: pinhole camera, f = (w/2)/tan(fov/2), x right, y down, z boresight, then the solved attitude.
+  - `refine_attitude`: least-squares (Kabsch) refit of tetra3's attitude on every blob near a
+    catalogue star. tetra3's own attitude was off by 12″ median and up to ~130″ in roll; the refit
+    brings that to about 2.6″, and the rays at the frame edge improve to match.
+  - `position_fix` / `refine`: Σ wᵢ(I − uᵢuᵢᵀ)(Xᵢ − P) = 0, first unweighted, then wᵢ = 1/(σᵢrᵢ)².
+    The Sun can be a sighting (X = 0).
+  - `covariance` / `ellipsoid`: (Σ (I − uuᵀ)/(σᵢrᵢ)²)⁻¹ and its 1σ semi-axes.
+  - `identify`: brute force over seeds of (3 candidates × 3 bodies). Each seed gives a P in
+    0.3–6 AU, predicts every body from it and gathers the candidates that agree within 120″. It
+    keeps the hypothesis with the most bodies, then the lowest residual.
+  - `navigate`: identify, then the final fix with light time.
+  - Unresolved Earth+Moon: from a few tenths of an AU the two are one blob. `identify` also tries
+    the pseudo-body "Earth+Moon" (its flux-weighted photocentre). The flux-vs-magnitude curve comes
+    from the display's blob model, which a real camera would calibrate on identified stars.
+
+Benchmark scenario: hidden observer 0.7–2 AU from the Sun, ecliptic latitude ±3°, at epoch
+2026-11-08. The nav scan is 8 pointings along the ecliptic at Sun elongations 40°–320°
+(1920×1080, 50° FOV, 10° overlap). No pointing is within 35° of the Sun, and the Sun is never
+rendered. Each frame is solved with the solve_live settings: centroids with max_area 100,
+60 centroids, FOV 50 ± 2°, at least 8 matches, Prob ≤ 1e-6. A second centroid pass with
+max_area 3000 finds the planets: anything brighter than about mag 1 renders larger than 100 px
+and tetra3's star filter drops it. Blobs more than 4 px from every catalogue star are candidates.
+
+Results (the same 24 hidden positions in every run, `--seed 1`; files in `camera/out/`):
+
+| run | Sun | fixes | median err | 90% err | median 1σ ellipsoid | mean NEES | ID ok |
+|---|---|---:|---:|---:|---|---:|---:|
+| geometry, 20″ noise | no | 24/24 | 31,600 km (2.1e-4 AU) | 129,000 km | 75,600 / 13,100 / 12,500 km | 2.6 | 24/24 |
+| geometry, 20″ noise | 20″ | 24/24 | 28,900 km | 82,000 km | 34,100 / 11,500 / 11,100 km | 3.8 | 24/24 |
+| rendered, clean screen | no | 24/24 | 10,100 km (6.7e-5 AU) | 16,800 km | 20,600 / 3,800 / 3,600 km | 2.1 | 24/24 |
+| rendered, clean screen | 20″ | 24/24 | 9,700 km | 25,300 km | 16,200 / 3,800 / 3,600 km | 2.3 | 24/24 |
+| rendered, `--noise 3` | no | 24/24 | 7,600 km | 18,900 km | 20,600 / 3,800 / 3,600 km | 2.3 | 24/24 |
+| rendered, `--noise 3` | 20″ | 24/24 | 11,900 km | 22,100 km | 16,200 / 3,800 / 3,600 km | 2.6 | 24/24 |
+| rendered, `--sim-camera` | no | 24/24 | 22,900 km (1.5e-4 AU) | 38,200 km | 41,100 / 7,600 / 7,300 km | 40.7 | 23/24 |
+| rendered, `--sim-camera` | 20″ | 24/24 | 15,100 km | 38,700 km | 23,300 / 7,300 / 6,900 km | 2.3 | 24/24 |
+
+Planet direction errors after the attitude refit: 1.9″ median on the clean screen, 3.1″ with
+noise 3, 8.0″ through the fake webcam (keystone, defocus, LCD glow, JPEG; the homography is
+fitted to 0.12 px). Every one of the 192 scan frames locked in each rendered run.
+
+- **Clean and noise 3:** about 8,000–12,000 km median.
+- **Fake camera:** about 15,000–23,000 km.
+- **Feasibility review:** both are inside or below its 10,000–30,000 km estimate. Geometry mode
+  at 20″ is about 30,000 km, because those positions see a median of 5 bodies.
+- **The ellipsoid is honest:** NEES ≈ 2–4. The ellipsoid σ was 5″ for the screen runs and 10″
+  for the fake camera.
+- **Wrong ID:** one fake-camera position (planets only) gave its partly merged Earth/Moon blob a
+  334″ direction error. It was identified as Earth, and the fix was 700,000 km off; this outlier
+  alone causes the NEES of 40.
+- **Weak axis:** the long axis of the ellipsoid points out of the ecliptic, because all the
+  planets lie near it (feasibility review point 5).
+- **Earth/Moon ambiguity:** Earth and the Moon can swap and still give a self-consistent fix
+  about 350,000 km off. Before the identifier also seeded on the Earth+Moon blend, this happened
+  once per run.
+- **Fake-camera fixes:** the edge of the screen's glow shows up as a row of blobs (dropped
+  within 10 px of the edge). Noise blobs: only the 8 brightest unmatched blobs per frame are kept.
+
+### Live (sim.live → solve_live → dashboard)
+
+```
+demo/fake_demo.sh --nav        # everything, no camera; dashboard POSITION panel
+# or by hand:
+.venv/bin/python -m sim.live --window --planets
+.venv/bin/python -m camera.solve_live --follow-sim --nav --nav-scan 3
+.venv/bin/python -m dashboard
+```
+
+- **`sim.live --planets`** gives the spacecraft a hidden random position: 0.7–2 AU from the Sun,
+  within ±3° of the ecliptic, epoch `--jd`, default 2026-11-08. It draws Mercury to Saturn and the
+  Moon where they appear from there; the Sun is never drawn.
+  - New truth fields: `pos_km`, `jd`, and `planets` (as drawn, so `--follow-sim` and the
+    dashboard redraw the same screen).
+  - New commands on UDP 5006: `point <ra> <dec> [roll]` (hold this attitude; tumbling stops) and
+    `pos random` (key `n`).
+- **`solve_live --nav`**: after each LOCK it runs `CandidateFinder`: refit the attitude on all stars,
+  then list the non-star blobs as inertial rays. `LiveNavigator` keeps these rays and forgets any
+  not seen for `--nav-memory` s (default 60). A background thread re-solves the position whenever
+  the list changes.
+  - `--nav-scan 3` sends sim.live a `point` command every 3 s, for 8 pointings along the ecliptic.
+    A full scan takes 24 s.
+  - Every estimate packet carries a `nav` block: position, covariance, 1σ axes, bodies used,
+    distance from the Sun and to Earth (± the 1σ along that line), and `err_km` against the
+    hidden truth.
+- **Dashboard**: a POSITION panel appears when `nav` data arrives (it replaces the tumble/glare
+  strip).
+  - Readouts: distance from the Sun, distance to Earth ± its 1σ, and the error against the truth.
+  - Map: top view of the ecliptic, with orbits, planets, the sight lines used, the hidden truth
+    (dashed ring) and the estimate (green).
+  - Zoom inset: the 1σ and 3σ error ellipse in the ecliptic plane, the offset to the truth, a km
+    scale bar and the out-of-plane 1σ.
+
+- **Flare = lost again** (`fake_demo.sh --nav` turns both on; a demo convention, since a real flare
+  only turns the spacecraft):
+  - `sim.live --flare-moves`: a flare also moves the spacecraft to a new hidden position.
+  - `solve_live --nav-reset-on-blind`: the solver drops its sightings and fix when a frame is
+    whited out (mean > 180), which is what the camera itself sees during a flare.
+  - Measured: reset after 1 s, a first new fix 14 s after the flare (3 bodies, 24,800 km off),
+    then 6 bodies and 435 km off once the scan finished.
+- **Distance-to-Earth working** on the dashboard: our position (from the photos), Earth's (from the
+  ephemeris), the subtraction written out, light time, the truth comparison, and how closely
+  Earth was seen where predicted. The map draws a labelled line to Earth.
+
+**First live run** (`--seed 4`, hidden position 1.926 AU from the Sun):
+- 400/400 frames locked.
+- After one scan (~25 s): 7 bodies; Earth is 411.392 million km away ± 23,000 km; the error vs
+  truth is 4,648 km.
+- The 1σ ellipse is 23,000 × 8,800 km (σ = 10″, deliberately conservative).
+
+Not done yet:
+- A photometric check (blob brightness against predicted magnitude) to rule out Earth/Moon swaps.
+- The scan ignores the Sun. sim.live never draws it, so no pointing is excluded around it. A real
+  spacecraft would skip pointings near the Sun and add a sun sensor.
+- Console/voice integration: the OLED, servos and voice callouts don't know about position yet.
+- The real camera.

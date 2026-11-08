@@ -111,6 +111,7 @@ function updateText() {
   $("sess").textContent = st.session_n ? `${st.session_lock}/${st.session_n} locked` : "—";
 
   updateSolveRate();
+  updateNavText();
 }
 
 function updateSolveRate() {
@@ -384,9 +385,165 @@ function drawChart() {
   ctx.fillStyle = C.lost; ctx.fillText("■ lost", L + 140, T + 2);
 }
 
+// ---------------------------------------------------------------- position from planets
+const PLANET_COL = { Mercury: "#b9b4ab", Venus: "#f3d9a4", Earth: "#5aa8ff", Moon: "#c9ced8", Mars: "#ff7a50",
+                     Jupiter: "#e9c79a", Saturn: "#e8d59a" };
+function fmtKm(km) {
+  if (km == null) return "—";
+  if (km >= 1e6) return (km / 1e6).toFixed(2) + " Mkm";
+  return Math.round(km).toLocaleString("en-US") + " km";
+}
+function updateNavText() {
+  const n = S && S.nav, panel = $("navPanel");
+  const show = !!n;
+  if (panel.hidden === show) { panel.hidden = !show; document.body.classList.toggle("with-nav", show); }
+  if (!n) return;
+  const fix = n.est_au != null;
+  // A flare turns the spacecraft, it doesn't move it: without a lock we keep the last fix and say so.
+  const hold = fix && S.state !== "LOCK";
+  panel.classList.toggle("hold", hold);
+  $("navHold").textContent = hold ? `· HOLD (no lock) · last fix ${n.age_s != null ? n.age_s.toFixed(0) + " s ago" : ""}` : "";
+  $("navR").textContent = fix ? n.r_au.toFixed(4) + " AU" : "—";
+  $("navEarth").textContent = fix ? (n.earth_km / 1e6).toFixed(3) + " Mkm" : "—";
+  $("navEarthSig").textContent = fix ? "± " + fmtKm(n.earth_sigma_km) + " (1σ)" : "";
+  $("navErr").textContent = fix && n.err_km != null ? fmtKm(n.err_km) : "—";
+  $("navErr").style.color = hold || !fix || n.err_km == null ? C.dim : n.axes_km && n.err_km < 3 * n.axes_km[0] ? C.lock : C.search;
+  $("navSig").textContent = fix && n.axes_km ? "1σ ≤ " + fmtKm(n.axes_km[0]) : "";
+  // the distance-to-Earth working: position from the sightings, Earth from the ephemeris, subtract
+  const ec = fix && n.earth_calc;
+  let calc = "";
+  if (ec) {
+    const v3 = (v) => `(${v.map((x) => (x >= 0 ? "+" : "") + x.toFixed(4)).join(", ")}) AU`;
+    const d = ec.us_au.map((u, i) => ec.earth_au[i] - u);
+    calc =
+      `<div><span class="k">US</span><span class="v">${v3(ec.us_au)}</span> photos</div>` +
+      `<div><span class="k">EARTH</span><span class="earth">${v3(ec.earth_au)}</span> ephemeris</div>` +
+      `<div><span class="k">DISTANCE</span>√(${d.map((x) => (x < 0 ? `(${x.toFixed(3)})` : x.toFixed(3)) + "²").join("+")}) AU ` +
+      `= <span class="v">${(ec.km / 1e6).toFixed(3)} Mkm</span></div>` +
+      `<div><span class="k">LIGHT</span><span class="v">${ec.light_min.toFixed(1)} min</span>` +
+      (ec.truth_km != null
+        ? ` · truth ${(ec.truth_km / 1e6).toFixed(3)} Mkm, ` +
+          `<span class="${Math.abs(ec.km - ec.truth_km) < 3 * (ec.sigma_km || 1e9) ? "ok" : "warn"}">off ${fmtKm(Math.abs(ec.km - ec.truth_km))}</span>`
+        : "") + `</div>` +
+      (ec.seen_as
+        ? `<div><span class="k">CHECK</span>${ec.seen_as} seen where predicted (<span class="ok">${ec.resid_arcsec.toFixed(1)}″</span>)</div>`
+        : `<div><span class="k">CHECK</span>Earth not in the photos</div>`);
+  }
+  if ($("navCalc").innerHTML !== calc) $("navCalc").innerHTML = calc;
+  $("navNote").textContent = fix
+    ? `${n.bodies.length} bodies: ${n.bodies.join(", ")}`
+    : n.status === "no fix" ? `${n.n_cand || 0} candidates · no consistent fix yet`
+    : `collecting planets · ${n.n_cand || 0} candidates`;
+}
+function drawNav() {
+  const n = S && S.nav;
+  if (!n) return;
+  const [ctx, W, H] = fit($("navmap"));
+  ctx.clearRect(0, 0, W, H);
+  const pl = n.planets || {}, est = n.est_au, tru = n.truth_au;
+  const norm = (v) => (v ? Math.hypot(v[0], v[1]) : 0);
+  const Rau = Math.max(1.75, 1.15 * Math.max(norm(est), norm(tru), norm(pl.Mars)));
+  const cx = W * 0.36, cy = H / 2 + 6, sc = Math.min(W * 0.34, H / 2 - 14) / Rau;
+  const X = (v) => cx + v[0] * sc, Y = (v) => cy - v[1] * sc;
+  ctx.font = "600 11px -apple-system, Helvetica, Arial"; ctx.textBaseline = "middle";
+  // orbits (circles through today's distance) and planets
+  for (const b of ["Mercury", "Venus", "Earth", "Mars"]) {
+    if (!pl[b]) continue;
+    ctx.strokeStyle = "rgba(111,124,150,.22)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, norm(pl[b]) * sc, 0, 2 * Math.PI); ctx.stroke();
+  }
+  const used = new Set((n.bodies || []).flatMap((b) => b.split("+")));
+  // sight lines from the estimate
+  if (est) {
+    for (const b of used) {
+      if (!pl[b] && b !== "Sun") continue;
+      const q = b === "Sun" ? [0, 0] : pl[b];
+      let dx = q[0] - est[0], dy = q[1] - est[1];
+      const d = Math.hypot(dx, dy), far = Rau * 3;
+      const end = d * sc > W ? [est[0] + dx / d * far, est[1] + dy / d * far] : q;
+      ctx.strokeStyle = "rgba(60,230,122,.22)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(X(est), Y(est)); ctx.lineTo(X(end), Y(end)); ctx.stroke();
+    }
+  }
+  ctx.fillStyle = "#ffd75e"; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = C.dim; ctx.textAlign = "left"; ctx.fillText("Sun", cx + 7, cy - 8);
+  for (const [b, v] of Object.entries(pl)) {
+    if (b === "Moon") continue;
+    const r = norm(v);
+    let px = X(v), py = Y(v), lab = b;
+    const inside = r * sc < Math.min(W * 0.34, H / 2 - 14) * 0.98;
+    if (!inside) {   // Jupiter / Saturn: pin to the edge in their direction
+      const k = Math.min(W * 0.34, H / 2 - 14) * 0.95 / (r * sc);
+      px = cx + v[0] * sc * k; py = cy - v[1] * sc * k; lab = `${b} →`;
+    }
+    ctx.fillStyle = PLANET_COL[b] || C.dim; ctx.globalAlpha = used.has(b) ? 1 : 0.45;
+    ctx.beginPath(); ctx.arc(px, py, inside ? 3.5 : 3, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillText(lab, px + 6, py - 7); ctx.globalAlpha = 1;
+  }
+  // the distance being reported: estimate -> Earth, labelled
+  if (est && pl.Earth && n.earth_calc) {
+    const E = pl.Earth;
+    ctx.strokeStyle = "#5aa8ff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X(est), Y(est)); ctx.lineTo(X(E), Y(E)); ctx.stroke();
+    const mx = (X(est) + X(E)) / 2, my = (Y(est) + Y(E)) / 2, lab = (n.earth_calc.km / 1e6).toFixed(1) + " Mkm";
+    ctx.font = "700 12px -apple-system, Helvetica, Arial"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const tw = ctx.measureText(lab).width;
+    ctx.fillStyle = "rgba(7,9,15,.85)"; ctx.fillRect(mx - tw / 2 - 4, my - 9, tw + 8, 18);
+    ctx.fillStyle = "#5aa8ff"; ctx.fillText(lab, mx, my);
+    ctx.font = "600 11px -apple-system, Helvetica, Arial";
+  }
+  if (tru) {
+    ctx.strokeStyle = C.truth; ctx.lineWidth = 1.5; ctx.setLineDash([3, 2]);
+    ctx.beginPath(); ctx.arc(X(tru), Y(tru), 8, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (est) {
+    ctx.fillStyle = S.state === "LOCK" ? C.lock : C.search;
+    ctx.beginPath(); ctx.arc(X(est), Y(est), 4, 0, 2 * Math.PI); ctx.fill();
+  }
+  // legend + 1 AU scale bar
+  ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillStyle = C.dim;
+  ctx.strokeStyle = C.dim; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(6, H - 8); ctx.lineTo(6 + sc, H - 8); ctx.stroke();
+  ctx.fillText("1 AU", 10 + sc, H - 8);
+  ctx.fillStyle = C.lock; ctx.beginPath(); ctx.arc(10, 10, 4, 0, 2 * Math.PI); ctx.fill();
+  ctx.fillStyle = C.dim; ctx.fillText("estimate", 18, 10);
+  ctx.strokeStyle = C.truth; ctx.setLineDash([3, 2]); ctx.beginPath(); ctx.arc(80, 10, 5, 0, 2 * Math.PI); ctx.stroke();
+  ctx.setLineDash([]); ctx.fillText("truth (hidden)", 90, 10);
+  // zoom inset: estimate at the centre, 1-sigma / 3-sigma ellipse (ecliptic plane), truth offset
+  if (est && n.ellipse_km) {
+    const iw = Math.min(W * 0.34, H * 0.8, 190), ih = iw, ix = W - iw - 4, iy = H - ih - 4;
+    ctx.fillStyle = "rgba(7,9,15,.85)"; ctx.fillRect(ix, iy, iw, ih);
+    ctx.strokeStyle = C.edge; ctx.strokeRect(ix + 0.5, iy + 0.5, iw - 1, ih - 1);
+    const [a, b, th] = n.ellipse_km, e = n.err_ecl_km;
+    const span = Math.max(3.3 * a, e ? 1.25 * Math.hypot(e[0], e[1]) : 0);
+    const k = Math.min(iw, ih) / 2 / span, icx = ix + iw / 2, icy = iy + ih / 2;
+    for (const [m, al] of [[3, 0.35], [1, 0.9]]) {
+      ctx.strokeStyle = C.lock; ctx.globalAlpha = al; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.ellipse(icx, icy, Math.max(1, m * a * k), Math.max(1, m * b * k), -th, 0, 2 * Math.PI); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = C.lock; ctx.beginPath(); ctx.arc(icx, icy, 3, 0, 2 * Math.PI); ctx.fill();
+    if (e) {
+      ctx.strokeStyle = C.truth; ctx.setLineDash([3, 2]); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(icx + e[0] * k, icy - e[1] * k, 6, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // scale bar: a round number of km
+    const target = span * 0.6, p10 = Math.pow(10, Math.floor(Math.log10(target)));
+    const bar = [1, 2, 5].map((m) => m * p10).filter((v) => v <= target).pop() || p10;
+    ctx.strokeStyle = C.text || "#dbe3f4"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(ix + 8, iy + ih - 10); ctx.lineTo(ix + 8 + bar * k, iy + ih - 10); ctx.stroke();
+    ctx.fillStyle = C.dim; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+    ctx.fillText(fmtKm(bar), ix + 8, iy + ih - 13);
+    ctx.textBaseline = "top"; ctx.fillText("ZOOM · 1σ / 3σ", ix + 6, iy + 5);
+  } else if (!est) {
+    ctx.fillStyle = C.search; ctx.textAlign = "right"; ctx.textBaseline = "top";
+    ctx.fillText(n.status === "no fix" ? "NO FIX YET" : "COLLECTING PLANETS…", W - 6, 6);
+  }
+}
+
 // ---------------------------------------------------------------- loop
 function frameLoop(t) {
-  drawView(); drawAtt3d(t); drawChart();
+  drawView(); drawAtt3d(t); drawChart(); drawNav();
   if (S && performance.now() - lastMsg > 2500) { $("lockBadge").className = "badge nosig"; $("lockBadge").innerHTML = "NO<br>SIGNAL"; }
   requestAnimationFrame(frameLoop);
 }

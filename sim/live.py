@@ -23,6 +23,15 @@ flare whiteout added to every pixel (0..255): a flare blinds the sensor for
 
 The same commands are accepted as text lines over UDP on 127.0.0.1:5006, so
 the serial bridge can drive it:  flare | rate <deg/s> | glare 0|1 | calib 0|1 | pause 0|1
+
+--planets: the spacecraft also has a hidden position in the Solar System (random, 0.7-2 AU from
+the Sun near the ecliptic; JPL DE421 via sim.planets, data/de421.bsp). Mercury..Saturn and the
+Moon are drawn at their apparent directions (light time included) in the stars' blob style; the
+Sun is never drawn. Extra truth fields: "pos_km" (hidden heliocentric ICRF position, km), "jd"
+(TDB Julian date), "planets" ([[name, ra, dec, mag], ...] as drawn, so --follow-sim and the
+dashboard can redraw the screen). Extra commands (UDP and keys):
+  point <ra> <dec> [roll]   hold this attitude (deg; tumble stops)    pos random | n key: new hidden position
+--flare-moves: a flare also picks a new hidden position (so the navigator has to find it again).
 """
 import argparse
 import json
@@ -53,7 +62,27 @@ class Sim:
         self.frame = 0
         self.flash_t0 = None   # monotonic time of the last flare's whiteout
         self.flash = 0.0       # current whiteout level added to every pixel, 0..255
+        self.eph = self.pos = self.jd = None
+        self.planets, self.extra = [], None
+        if args.planets:
+            from sim import planets as pl
+            self.eph, self.jd = pl.Ephemeris(), args.jd
+            self.new_position()
         self.flare(blind=False)
+
+    def new_position(self):
+        from sim import planets as pl
+        self.pos = pl.random_observer(self.rng, self.eph, self.jd)
+        self.planets = pl.sky_list(self.eph.apparent(self.pos, self.jd), self.sky.mag_limit)
+        self.extra = pl.extra_from_list(self.planets)
+        print(f"[position] new hidden position, {np.linalg.norm(self.pos) / pl.AU_KM:.3f} AU from the Sun; "
+              f"on screen when in view: {', '.join(p[0] for p in self.planets) or 'nothing'}")
+
+    def point(self, ra, dec, roll=0.0):
+        from sim.sky import from_radecroll
+        self.att = from_radecroll(ra, dec, roll)
+        self.rate_dps = 0.0
+        print(f"[point] RA {ra:.2f} Dec {dec:.2f} Roll {roll:.1f}")
 
     # ---- commands (keyboard and UDP share these) ----
     def flare(self, blind=True):
@@ -67,6 +96,8 @@ class Sim:
         self.axis = axis / np.linalg.norm(axis)
         self.glare_corner = self.rng.choice([0.0, 1.0], 2)
         print(f"[flare] new hidden attitude; tumble {self.rate_dps:.1f} deg/s")
+        if blind and self.a.flare_moves and self.eph is not None:
+            self.new_position()   # demo convention: the flare also leaves us somewhere unknown
 
     def set_rate(self, dps):
         self.rate_dps = float(np.clip(dps, 0, 60))
@@ -88,6 +119,13 @@ class Sim:
             self.calib = on(self.calib)
         elif cmd == "pause":
             self.paused = on(self.paused)
+        elif cmd == "point" and len(parts) >= 3:
+            try:
+                self.point(*(float(v) for v in parts[1:4]))
+            except ValueError:
+                print(f"[udp] bad point command: {line!r}")
+        elif cmd == "pos" and self.eph is not None:
+            self.new_position()
         else:
             print(f"[udp] unknown command: {line!r}")
 
@@ -100,7 +138,7 @@ class Sim:
         self.flash = self.flash_level()
         if self.calib:
             return self.calib_img
-        img = self.sky.render(self.att, omega if not self.paused else None, self.a.exposure)
+        img = self.sky.render(self.att, omega if not self.paused else None, self.a.exposure, extra=self.extra)
         if self.glare:
             self.sky.glare(img, corner=self.glare_corner)
         if self.flash > 0:
@@ -128,7 +166,9 @@ class Sim:
                 "glare_corner": [float(v) for v in self.glare_corner],
                 "flash": round(self.flash, 1),
                 "mode": "calib" if self.calib else "paused" if self.paused else "sky",
-                "w": self.a.width, "h": self.a.height}
+                "w": self.a.width, "h": self.a.height,
+                **({"pos_km": [round(float(v), 1) for v in self.pos], "jd": self.jd, "planets": self.planets}
+                   if self.pos is not None else {})}
 
 
 def main():
@@ -148,6 +188,12 @@ def main():
     ap.add_argument("--solver-truth-port", type=int, default=5009,
                     help="same truth for camera.solve_live (0 = don't send)")
     ap.add_argument("--cmd-port", type=int, default=5006)
+    ap.add_argument("--planets", action="store_true",
+                    help="hidden position in the Solar System; draw the planets (needs data/de421.bsp)")
+    ap.add_argument("--flare-moves", action="store_true",
+                    help="--planets: a flare also moves the spacecraft to a new hidden position (demo convention; "
+                         "a real flare only changes attitude)")
+    ap.add_argument("--jd", type=float, default=2461352.5, help="--planets: epoch, TDB Julian date (2026-11-08)")
     args = ap.parse_args()
 
     sim = Sim(args)
@@ -207,6 +253,8 @@ def main():
             sim.calib = not sim.calib
         elif key == ord("p"):
             sim.paused = not sim.paused
+        elif key == ord("n") and sim.eph is not None:
+            sim.new_position()
         elif key == ord("s"):
             rec = ROOT / "recordings"
             rec.mkdir(exist_ok=True)
