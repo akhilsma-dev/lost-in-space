@@ -123,9 +123,10 @@ class SimSource:
 
 
 class FollowSource:
-    """Redraws whatever sim.live is showing right now, from its truth packets (attitude,
-    body rate, exposure, glare). No camera: the solver sees exactly the screen pixels, and
-    console flare / tumble commands to sim.live reach it. Waits for each new sim frame."""
+    """Whatever sim.live is showing right now, frame by frame. No camera: the solver sees exactly the
+    screen pixels, and console flare / tumble commands to sim.live reach it. The pixels come from the
+    sim's shared-memory frame bus (sim/framebus.py, named in the truth packet's "shm") when there is one,
+    else they are redrawn from the truth packet (attitude, body rate, exposure, glare, planets)."""
 
     def __init__(self, a):
         self.a = a
@@ -136,7 +137,25 @@ class FollowSource:
         self.sky = SkyRenderer(self.sw, self.sh, self.fov)
         self.H = None
         self.last_frame = None
+        self.bus, self.bus_name, self.render_ms = None, None, 0.0
         print(f"[follow-sim] following sim.live: {self.sw}x{self.sh}, FOV {self.fov} deg")
+
+    def _bus_frame(self, tr):
+        name = tr.get("shm") if not self.a.no_shm else None
+        if name != self.bus_name:
+            if self.bus is not None:
+                self.bus.close()
+            self.bus, self.bus_name = None, name
+            if name:
+                try:
+                    from sim.framebus import FrameReader
+                    self.bus = FrameReader(name)
+                    print(f"[follow-sim] reading sim.live's frames from shared memory '{name}' (no redraw)")
+                except Exception as e:
+                    print(f"[follow-sim] shared memory '{name}' unusable ({e}); redrawing from truth")
+        if self.bus is None or (self.bus.w, self.bus.h) != (self.sw, self.sh):
+            return None
+        return self.bus.read(int(tr["frame"]))
 
     def read(self):
         while True:
@@ -150,6 +169,11 @@ class FollowSource:
         if (tr["w"], tr["h"], tr["fov"]) != (self.sw, self.sh, self.fov):
             self.sw, self.sh, self.fov = tr["w"], tr["h"], tr["fov"]
             self.sky = SkyRenderer(self.sw, self.sh, self.fov)
+        _r0 = time.perf_counter()
+        img = self._bus_frame(tr)
+        if img is not None:
+            self.render_ms = (time.perf_counter() - _r0) * 1000
+            return time.time(), img, tr
         att = from_radecroll(tr["ra"], tr["dec"], tr["roll"])
         omega = np.radians(tr.get("omega") or [0.0, 0.0, 0.0])
         from sim.planets import extra_from_list   # planets on screen (sim.live --planets)
@@ -159,7 +183,9 @@ class FollowSource:
             self.sky.glare(img, corner=tuple(tr.get("glare_corner") or (1.0, 1.0)))
         if tr.get("flash"):
             img += float(tr["flash"])   # flare whiteout: the sensor is blinded
-        return time.time(), SkyRenderer.to_u8(img), tr
+        out = SkyRenderer.to_u8(img)
+        self.render_ms = (time.perf_counter() - _r0) * 1000
+        return time.time(), out, tr
 
     def close(self):
         pass
@@ -198,6 +224,11 @@ class Solver:
     def __init__(self, a, src):
         self.a, self.src = a, src
         self.acq = Acquisition(a)             # DETECTING -> MATCHING -> VERIFYING k/N -> LOCK
+        # a rendered sky is black: a global background is enough and ~4x faster than tetra3's local
+        # filter (43 vs 171 ms on 1080p, same accuracy). A real camera keeps the local filter (room light).
+        fast = a.centroid_mode == "fast" or (a.centroid_mode == "auto" and (a.sim or a.follow_sim) and not a.sim_camera)
+        self.centroid_kw = {"bg_sub_mode": "global_mean", "binary_open": False} if fast else {}
+        print(f"[solver] star finder: {'fast (global background)' if fast else 'robust (local background)'}")
         self.t3 = load_tetra3()
         self.starnet = None
         if a.detector == "starnet":
@@ -227,7 +258,7 @@ class Solver:
                                                 solve_timeout=self.a.timeout_ms, **fov_kw)
                    if len(c) >= 4 else {"RA": None})
             return c, c_cam, res, (time.perf_counter() - t0) * 1000
-        c_cam = centroids(gray, max_returned=self.a.max_centroids, max_area=self.a.max_area)
+        c_cam = centroids(gray, max_returned=self.a.max_centroids, max_area=self.a.max_area, **self.centroid_kw)
         if self.src.H is not None:
             c = warp_points(c_cam, self.src.H)
             keep = (c[:, 0] > -0.5) & (c[:, 0] < self.src.sw - 0.5) & (c[:, 1] > -0.5) & (c[:, 1] < self.src.sh - 0.5)
@@ -410,7 +441,9 @@ class Recovery:
             r = self.r0 - a.detumble_accel * (t - self.t0)
             if r > 0:
                 self._cmd(t, r)
-                return None if status == "LOCK" or stage.startswith("VERIFYING") else f"DETUMBLING {r:.1f}"
+                # keep showing DETUMBLING over a fresh candidate (check 1 restarts while the rate still falls)
+                return (None if status == "LOCK" or (stage.startswith("VERIFYING") and not stage.startswith("VERIFYING 1/"))
+                        else f"DETUMBLING {r:.1f}")
             self._cmd(t, 0.0, force=True)
             self.mode, self.idle_since = None, t
             print(f"[recover] detumbled ({t - self.t0:.1f} s)")
@@ -489,6 +522,55 @@ class FrameSender:
             pass
 
 
+class NavWorker:
+    """Runs LiveNavigator.observe (the planet-candidate pass) off the frame loop. One job at a time;
+    a frame offered while it is busy is skipped (planets barely move between frames)."""
+
+    def __init__(self):
+        import threading
+        self.job, self.busy, self.ev = None, False, threading.Event()
+        threading.Thread(target=self._run, daemon=True, name="nav-observe").start()
+
+    def submit(self, navi, gray, att, t):
+        if self.busy:
+            return False
+        self.busy, self.job = True, (navi, gray.copy(), att, t)
+        self.ev.set()
+        return True
+
+    def _run(self):
+        while True:
+            self.ev.wait()
+            self.ev.clear()
+            navi, gray, att, t = self.job
+            try:
+                navi.observe(gray, att, t)
+            except Exception as e:   # never kill the solver over a bad candidate pass
+                print("[nav] observe:", repr(e))
+            self.busy = False
+
+
+class Perf:
+    """Where each frame's time goes; printed every 5 s as one [perf] line (always, also with --quiet)."""
+    NAMES = ("read", "solve", "misc", "nav", "send")
+
+    def __init__(self):
+        self.t0, self.n, self.acc, self.render = time.perf_counter(), 0, [0.0] * 5, 0.0
+
+    def add(self, *dts):
+        self.n += 1
+        for i in range(5):
+            self.acc[i] += dts[i]
+        self.render += dts[5]
+        now = time.perf_counter()
+        if now - self.t0 >= 5.0:
+            ms = [1000 * v / self.n for v in self.acc]
+            print(f"[perf] {self.n / (now - self.t0):4.1f} solves/s | " + ", ".join(
+                f"{k} {v:.0f}" + (f" (render {1000 * self.render / self.n:.0f})" if k == "read" else "")
+                for k, v in zip(self.NAMES, ms)) + " ms/frame", flush=True)
+            self.t0, self.n, self.acc, self.render = now, 0, [0.0] * 5, 0.0
+
+
 def annotate(gray, c_cam, res, H, status, line):
     vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     for x, y in c_cam:
@@ -510,6 +592,8 @@ def main():
     src_g.add_argument("--sim-camera", action="store_true", help="with --sim: pass frames through camera.fakecam")
     src_g.add_argument("--follow-sim", action="store_true",
                        help="no camera: redraw the frames the running sim.live shows (from its truth packets)")
+    src_g.add_argument("--no-shm", action="store_true",
+                       help="with --follow-sim: redraw from truth instead of reading sim.live's shared frames")
     src_g.add_argument("--index", type=int, default=0)
     src_g.add_argument("--cam-w", type=int, default=1920)
     src_g.add_argument("--cam-h", type=int, default=1080)
@@ -529,6 +613,9 @@ def main():
     sol.add_argument("--fov-max-error", type=float, default=2.0)
     sol.add_argument("--detector", choices=["tetra3", "starnet"], default="tetra3",
                      help="star finder before tetra3's pattern match: tetra3's blob finder, or StarNet (ml/)")
+    sol.add_argument("--centroid-mode", choices=["auto", "fast", "robust"], default="auto",
+                     help="star finder background: fast = global (black rendered sky, ~4x faster), robust = "
+                          "tetra3's local filter (real camera). auto: fast for --sim / --follow-sim")
     sol.add_argument("--max-centroids", type=int, default=60)
     sol.add_argument("--max-area", type=int, default=100,
                      help="largest blob (px) kept as a star; tetra3 default 100. 5000 keeps motion-blur "
@@ -604,7 +691,7 @@ def main():
     io.add_argument("--frame-port", type=int, default=FRAME_PORT,
                     help="solved frames (small JPEG) for the dashboard camera panel (0 = don't send)")
     io.add_argument("--frame-w", type=int, default=640, help="width of the frames sent to the dashboard, px")
-    io.add_argument("--frame-hz", type=float, default=10.0, help="max frames per second sent to the dashboard")
+    io.add_argument("--frame-hz", type=float, default=15.0, help="max frames per second sent to the dashboard")
     io.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = run forever)")
     io.add_argument("--show", action="store_true", help="window with centroids / matches")
     io.add_argument("--save-shot", nargs="?", const="auto", default=None,
@@ -627,6 +714,7 @@ def main():
     t_start, t_unlock, stage_prev = None, None, None
     frames = FrameSender(a.frame_port, a.frame_w, a.frame_hz) if a.frame_port else None
     navi, scan_i, scan_t, nav_print, nav_t, was_blind = None, 0, 0.0, 0.0, 0.0, False
+    nav_worker = None
     N_SCAN = 8
     button = a.nav and a.nav_scan > 0 and a.nav_scan_mode == "button"
     sweep_left, scan_paused = 0, False         # button mode: pointings left in the current sweep
@@ -638,9 +726,12 @@ def main():
         print(f"[nav] scan on demand: 'whereami' on UDP {a.nav_cmd_port} (console WHERE AM I?)")
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0, "acq": []}
     shot, shot_lock = None, False
+    perf = Perf()
     try:
         while not a.frames or stats["n"] < a.frames:
+            _p0 = time.perf_counter()
             t, gray, truth = src.read()
+            _p1 = time.perf_counter()
             if gray is None:
                 print("frame grab failed")
                 break
@@ -648,6 +739,7 @@ def main():
                 continue  # sim is showing the checkerboard
             fov = truth["fov"] if truth and "fov" in truth else a.fov
             c_scr, c_cam, res, ms = solver.solve(gray, fov)
+            _p2 = time.perf_counter()
             status, conf, stage = solver.status(t, res, len(c_scr))
             if recovery is not None:
                 stage = recovery.update(t, status, stage, (truth or {}).get("rate_dps")) or stage
@@ -677,6 +769,7 @@ def main():
                 if truth:
                     msg["err_arcsec"] = round(pointing_error_arcsec(msg["ra"], msg["dec"], truth["ra"], truth["dec"]), 1)
                     msg["roll_err_deg"] = round(roll_error_deg(msg["roll"], truth["roll"]), 3)
+            _p3 = time.perf_counter()
             if a.nav:
                 # a whited-out frame (flare) is something the camera itself sees; with --nav-reset-on-blind
                 # we assume it may have left us anywhere and start the position search again
@@ -724,10 +817,14 @@ def main():
                         print(f"[nav] navigator ready ({src.sw}x{src.sh}, FOV {fov} deg)")
                     if truth and truth.get("jd"):
                         navi.jd = truth["jd"]   # the spacecraft clock; the sim's epoch
-                    # the candidate pass costs ~100 ms; skip it while spinning (blurred frames give junk candidates)
-                    if time.time() - nav_t >= a.nav_every and spin <= a.nav_max_rate:
+                        navi.finder.centroid_kw = solver.centroid_kw
+                        nav_worker = NavWorker()
+                    # the candidate pass costs 100+ ms: it runs in a worker so it never stalls the camera loop,
+                    # not while spinning (streaked frames give junk candidates) and, in button mode, only
+                    # during a WHERE AM I? sweep (no sightings are wanted between sweeps)
+                    if (time.time() - nav_t >= a.nav_every and spin <= a.nav_max_rate and (active or not button)
+                            and nav_worker.submit(navi, gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)):
                         nav_t = time.time()
-                        navi.observe(gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)
                 msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
                 if a.nav_scan > 0:
                     msg["nav"]["scan"] = {"mode": a.nav_scan_mode, "active": bool(active) if button else True,
@@ -742,6 +839,7 @@ def main():
                              f"bodies {'+'.join(nv['bodies'])}"
                              + (f", ERROR {nv['err_km']:,.0f} km" if 'err_km' in nv else "")
                              if nv.get("pos_km") else ""))
+            _p4 = time.perf_counter()
             pkt = json.dumps(msg).encode()
             out.sendto(pkt, ("127.0.0.1", a.estimate_port))
             if a.bridge_port:
@@ -749,6 +847,8 @@ def main():
             if frames is not None:
                 frames.send(t, gray, src.H, src.sw, src.sh, c_cam, msg)
 
+            _p5 = time.perf_counter()
+            perf.add(_p1 - _p0, _p2 - _p1, _p3 - _p2, _p4 - _p3, _p5 - _p4, getattr(src, "render_ms", 0.0) / 1000)
             stats["n"] += 1
             stats["nc"].append(len(c_scr))
             stats["ms"].append(ms)

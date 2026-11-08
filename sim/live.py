@@ -188,6 +188,8 @@ def main():
     ap.add_argument("--solver-truth-port", type=int, default=5009,
                     help="same truth for camera.solve_live (0 = don't send)")
     ap.add_argument("--cmd-port", type=int, default=5006)
+    ap.add_argument("--share-frames", action=argparse.BooleanOptionalAction, default=True,
+                    help="put each shown frame in shared memory for solve_live --follow-sim (no redraw)")
     ap.add_argument("--planets", action="store_true",
                     help="hidden position in the Solar System; draw the planets (needs data/de421.bsp)")
     ap.add_argument("--flare-moves", action="store_true",
@@ -202,6 +204,14 @@ def main():
     inp.bind(("127.0.0.1", args.cmd_port))
     inp.setblocking(False)
 
+    bus = None
+    if args.share_frames:
+        from sim.framebus import FrameWriter
+        try:
+            bus = FrameWriter(f"lis_{args.cmd_port}", args.width, args.height)
+            print(f"[frames] sharing frames in shared memory '{bus.name}' (solve_live --follow-sim reads them)")
+        except Exception as e:
+            print(f"[frames] shared memory unavailable ({e}); solve_live will redraw from truth")
     cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
     if args.window:
         cv2.resizeWindow(WIN, args.width // 2, args.height // 2)
@@ -222,7 +232,12 @@ def main():
 
         img = sim.step(dt)
         cv2.imshow(WIN, img)
-        pkt = json.dumps(sim.truth()).encode()
+        if bus is not None:
+            bus.write(sim.frame, img)   # before the truth packet, so the solver finds the frame
+        tr = sim.truth()
+        if bus is not None:
+            tr["shm"] = bus.name
+        pkt = json.dumps(tr).encode()
         out.sendto(pkt, ("127.0.0.1", args.truth_port))
         if args.solver_truth_port:
             out.sendto(pkt, ("127.0.0.1", args.solver_truth_port))
@@ -263,6 +278,8 @@ def main():
             (path.with_suffix(".json")).write_text(json.dumps(sim.truth()))
             print("saved", path)
     cv2.destroyAllWindows()
+    if bus is not None:
+        bus.close()
 
 
 if __name__ == "__main__":

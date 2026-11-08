@@ -131,6 +131,21 @@ whole screen. Screen pixel = 94" at 50 deg / 1920 px.
 
 Blob finding (~60 ms on a 1080p frame) dominates the frame time, not tetra3.
 
+### Frame rate (`--follow-sim`, 2026-11-08)
+
+`solve_live` prints a `[perf]` line every 5 s: solves/s and ms per frame for read (and render), solve, nav, send.
+Three changes took the `fake_demo.sh --nav` solver from about 2 to 15-18 solves/s (limited by sim.live's own
+~15 fps), 11-15 during a WHERE AM I? sweep:
+- **Shared frames.** sim.live puts each frame it shows in shared memory (`sim/framebus.py`, named in the truth
+  packet's `"shm"`; `sim.live --no-share-frames` turns it off) and `--follow-sim` copies it instead of redrawing
+  from truth: 50-100 ms → under 1 ms. `--no-shm` forces the old redraw.
+- **Fast star finder for rendered skies** (`--centroid-mode auto|fast|robust`): a black sky needs no local
+  background filter. tetra3 with `bg_sub_mode=global_mean, binary_open=False`: 43 vs 171 ms on 1080p, 12/12
+  solved, median 7″ vs 6″. auto = fast for `--sim` / `--follow-sim`, robust (tetra3's default) for a camera.
+- **Planet search off the frame loop.** The candidate pass (100+ ms) runs in a worker thread, not while spinning,
+  and in button mode only during a sweep. It used to cost 110-250 ms per frame on average once locked.
+
+
 ## Real camera, first try (2026-11-07): iPhone Continuity Camera, open room, no box
 
 `camera/box_test.sh [index]` runs the whole check (probe, sim full screen,

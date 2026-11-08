@@ -360,7 +360,7 @@ class CandidateFinder:
         flux=True also returns a brightness per blob (background-subtracted 9x9 sum around it)."""
         from camera.common import centroids, warp_points
         w, h = self.w, self.h
-        cc = centroids(gray, **kw)
+        cc = centroids(gray, **{**getattr(self, "centroid_kw", {}), **kw})
         c = cc if self.H is None else warp_points(cc, self.H)
         keep = (c[:, 0] > -0.5) & (c[:, 0] < w - 0.5) & (c[:, 1] > -0.5) & (c[:, 1] < h - 0.5)
         if not flux:
