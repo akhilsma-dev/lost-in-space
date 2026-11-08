@@ -1,0 +1,8 @@
+numpy
+opencv-python
+scipy
+pyserial
+elevenlabs
+sounddevice
+skyfield
+torch
