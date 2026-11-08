@@ -342,12 +342,17 @@ class Solver:
             return None
         return min(1.0, -math.log10(max(prob, 1e-300)) / 20) * max(0.0, 1 - rmse / self.a.rmse_max)
 
-    def status(self, t, res, n_stars):
+    def status(self, t, res, n_stars, blind=False):
         """Acquisition state machine. Returns (status, confidence, stage).
         status is LOCK / SEARCH / LOST as before; stage says what the tracker is doing right now."""
         conf = self.good(res)
         self.last_good = conf is not None   # this frame alone: a trustworthy solve (live solve rate per model)
-        return self.acq.update(t, res, n_stars, conf)
+        return self.acq.update(t, res, n_stars, conf, blind)
+
+
+# a frame brighter than this on average is whited out (flare): the sky is ~5-10, a white screen ~255 clean and
+# ~160 through the synthetic webcam (vignetting, the border around the screen)
+BLIND_MEAN = 100.0
 
 
 class Acquisition:
@@ -368,7 +373,7 @@ class Acquisition:
       COASTING s     LOCKed, but the last good solve is s seconds old (blurred / unsolved / rejected
                      frames): the attitude is carried forward at the measured rate, status stays LOCK.
                      The first good solve that agrees resumes LOCK; none within --coast s, or a whited-out
-                     frame (< 3 blobs: flare), gives LOST.
+                     frame (mean brightness > BLIND_MEAN or < 3 blobs: flare), gives LOST.
 
     The first good solve is check 1, so LOCK comes (N-1) * spacing s after the first match."""
 
@@ -404,7 +409,7 @@ class Acquisition:
             self.track = self.track * type(self.track).from_rotvec(self.w * (t - self.t_prop))
         self.t_prop = t
 
-    def update(self, t, res, n_stars, conf):
+    def update(self, t, res, n_stars, conf, blind=False):
         a = self.a
         if self.lost_t is None:
             self.lost_t = t
@@ -414,8 +419,9 @@ class Acquisition:
         if att is not None:
             # body rate from consecutive good solves (frame-to-frame, so the tumble changing is followed);
             # jump = how far this solve is from the previous one carried forward at the old rate.
-            # While LOCKed the previous good solve may be up to --coast s old (coasting through dropouts).
-            max_gap = max(0.6, a.coast + 0.1) if self.locked else 0.6
+            # While LOCKed the previous good solve may be up to --coast s old (coasting through dropouts) and the
+            # check always runs: a solve after a long gap must still agree (a flare's new attitude must not pass).
+            max_gap = 1e9 if self.locked else 0.6
             if t <= self.jump_ok_until:
                 self.w = np.zeros(3)                          # commanded repoint: carry on from the new attitude
             elif self.prev is not None and 0.02 < t - self.prev[0] < max_gap:
@@ -437,7 +443,7 @@ class Acquisition:
             age = t - self.prev[0] if self.prev is not None else 1e9
             if rejected and self.coast_att is None:
                 print(f"[track] attitude jumped {jump:.1f} deg in one frame (tol {tol:.1f}): rejected, coasting")
-            blind = n_stars < 3                               # whiteout (flare): nothing to coast through
+            blind = blind or n_stars < 3                      # whiteout (flare): nothing to coast through
             if age <= a.coast and not blind:
                 # carry the last good attitude forward at the measured rate
                 self.coast_att = self.prev[1] * type(self.prev[1]).from_rotvec(self.w * age)
@@ -729,8 +735,8 @@ def main():
                           "not a jump; flare / false-match jumps are tens of degrees)")
     acq.add_argument("--coast", type=float, default=1.5,
                      help="s: while LOCKed, carry the attitude forward at the measured rate through frames that "
-                          "do not solve (stage COASTING) for up to this long before LOST (a whited-out frame, < 3 blobs, "
-                          "is LOST at once); 0 = LOST on the first bad frame (the old behaviour)")
+                          "do not solve (stage COASTING) for up to this long before LOST (a whited-out frame, mean > 100 "
+                          "or < 3 blobs, is LOST at once); 0 = LOST on the first bad frame (the old behaviour)")
     acq.add_argument("--verify-timeout", type=float, default=2.5,
                      help="s without a good solve while VERIFYING before the candidate is dropped")
     rec = ap.add_argument_group("recovery maneuvers (while not locked)")
@@ -852,7 +858,8 @@ def main():
             fov = truth["fov"] if truth and "fov" in truth else a.fov
             c_scr, c_cam, res, ms = solver.solve(gray, fov)
             _p2 = time.perf_counter()
-            status, conf, stage = solver.status(t, res, len(c_scr))
+            # a whited-out frame (flare) is not a dropout to coast through (StarNet still "finds" stars in it)
+            status, conf, stage = solver.status(t, res, len(c_scr), blind=float(gray.mean()) > BLIND_MEAN)
             if recovery is not None:
                 stage = recovery.update(t, status, stage, (truth or {}).get("rate_dps")) or stage
             # acquisition timing: from start / loss of lock to LOCK
@@ -895,7 +902,7 @@ def main():
             if a.nav:
                 # a whited-out frame (flare) is something the camera itself sees; with --nav-reset-on-blind
                 # we assume it may have left us anywhere and start the position search again
-                blind = float(gray.mean()) > 180.0
+                blind = float(gray.mean()) > BLIND_MEAN
                 if blind and a.nav_reset_on_blind and navi is not None and not was_blind:
                     navi.reset()
                     print("[nav] sensor blinded: forgetting sightings, searching for the position again")

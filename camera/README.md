@@ -63,7 +63,7 @@ chain this way. `--detector starnet` uses our CNN (`ml/`) as the star finder. `-
 
 `{"t","ra","dec","roll","fov","status","stage","confidence","matches","prob","rmse","solve_ms","n_centroids","centroids":[[x,y],...],"truth","err_arcsec","roll_err_deg"}`
 
-- `status`: `LOCK` / `SEARCH` / `LOST`. A frame is good if tetra3 solved with >= 8 matched stars and false-match probability `prob` <= 1e-6 (`--min-matches`, `--prob-max`). `SEARCH` while acquiring (see stages below). Once locked, a frame that does not solve, or whose solve jumps more than 5 deg from the last good attitude carried forward at the measured rate (`--jump-tol`; a flare without whiteout, a false match), starts `COASTING`: status stays `LOCK` and `ra`/`dec`/`roll` are the attitude carried forward (`"coasting": true`, `prob`/`rmse` from the rejected or missing solve are not used). No good solve within `--coast` (1.5 s), or a whited-out frame (fewer than 3 blobs: flare), gives `LOST`.
+- `status`: `LOCK` / `SEARCH` / `LOST`. A frame is good if tetra3 solved with >= 8 matched stars and false-match probability `prob` <= 1e-6 (`--min-matches`, `--prob-max`). `SEARCH` while acquiring (see stages below). Once locked, a frame that does not solve, or whose solve jumps more than 5 deg from the last good attitude carried forward at the measured rate (`--jump-tol`; a flare without whiteout, a false match), starts `COASTING`: status stays `LOCK` and `ra`/`dec`/`roll` are the attitude carried forward (`"coasting": true`, `prob`/`rmse` from the rejected or missing solve are not used). No good solve within `--coast` (1.5 s), or a whited-out frame (mean brightness > 100 or fewer than 3 blobs: flare), gives `LOST`.
 - `stage`: what the tracker is doing right now (see below). `LOCK` when locked, `LOST` on the frame lock is lost.
 - `confidence` 0..1 = `min(1, -log10(prob)/20) * max(0, 1 - rmse/900")`; 0 unless LOCK.
 - `centroids`: screen pixels (x right, y down), brightest first, at most 100.
@@ -80,7 +80,7 @@ Lost-in-space acquisition takes a believable 5-6 s and every step is real work:
 | `RATE HIGH r` | matches, but the rate measured from consecutive solves is above `--acq-max-rate` (8 deg/s): too fast to confirm a lost-in-space solution. Once LOCKed, tracking holds at higher rates (20 deg/s with `--max-area 5000`) |
 | `VERIFYING k/N` | a candidate is being confirmed: every `--verify-spacing` (1 s) a new good solve must agree within `--verify-tol` (2 deg, +10% of the angle turned) with the previous verified attitude dead-reckoned forward at the measured body rate. Disagreement (a false match) restarts at check 1; no good solve for `--verify-timeout` (2.5 s) drops the candidate. The first match is check 1 of `--verify-n` (6) |
 | `LOCK` | all N checks passed: ~(N-1) x spacing = 5 s after the first match |
-| `COASTING s` | LOCKed, but the last good solve is s seconds old (blurred, unsolved or rejected frames): the attitude is carried forward at the measured body rate and reported with status `LOCK`, confidence fading to half. The next good solve that agrees resumes `LOCK`; none within `--coast` (1.5 s; `--coast 0` = the old LOST on the first bad frame) gives `LOST`. A flare whiteout (fewer than 3 blobs) is still `LOST` at once. While coasting, the jump check's rate term stops growing after 0.5 s (at most 20 deg by default) |
+| `COASTING s` | LOCKed, but the last good solve is s seconds old (blurred, unsolved or rejected frames): the attitude is carried forward at the measured body rate and reported with status `LOCK`, confidence fading to half. The next good solve that agrees resumes `LOCK`; none within `--coast` (1.5 s; `--coast 0` = the old LOST on the first bad frame) gives `LOST`. A flare whiteout (mean brightness > 100, or fewer than 3 blobs) is still `LOST` at once: StarNet finds "stars" in a whiteout, so the blob count alone is not enough. While coasting, the jump check's rate term stops growing after 0.5 s (at most 20 deg by default) |
 | `DETUMBLING r` | recovery: no stable lock for `--detumble-after` (3 s) while the sim tumbles faster than `--detumble-min` (1 deg/s): the rate is ramped down at `--detumble-accel` (4 deg/s^2) to 0, like reaction wheels braking. Once started it finishes (even if VERIFYING/LOCK happen on the way down) |
 | `SEARCH SLEW` | recovery: no stable lock for `--recover-after` (8 s) at rest and no candidate being verified: `--slew-rate` (6 deg/s) for `--slew-time` (3 s) to a new patch of sky, then rate 0 and the clock restarts. Repeats while lost |
 
@@ -339,7 +339,7 @@ demo/fake_demo.sh --nav        # everything, no camera; dashboard POSITION panel
   only turns the spacecraft):
   - `sim.live --flare-moves`: a flare also moves the spacecraft to a new hidden position.
   - `solve_live --nav-reset-on-blind`: the solver drops its sightings and fix when a frame is
-    whited out (mean > 180), which is what the camera itself sees during a flare.
+    whited out (mean > 100; a white screen is ~160 through the synthetic webcam), which is what the camera itself sees during a flare.
   - Measured: reset after 1 s, a first new fix 14 s after the flare (3 bodies, 24,800 km off),
     then 6 bodies and 435 km off once the scan finished.
 - **Distance-to-Earth working** on the dashboard: our position (from the photos), Earth's (from the
