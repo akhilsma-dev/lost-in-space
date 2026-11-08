@@ -9,8 +9,9 @@
 #   demo/fake_demo.sh --starnet  StarNet (ml/, our CNN) finds the stars, tetra3 matches them (GPU/MPS if present)
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
-#   demo/fake_demo.sh --nav      position from planets: hidden position + planets on screen, the solver scans
-#                                8 ecliptic pointings (3 s each) and fixes the position (dashboard POSITION panel);
+#   demo/fake_demo.sh --nav      position from planets: hidden position + planets on screen; WHERE AM I? on the
+#                                virtual console scans 8 ecliptic pointings (3 s each, paused while spinning) and
+#                                fixes the position (dashboard POSITION panel); with --board it scans continuously;
 #                                a flare also moves the spacecraft, so the position is found again after it
 #
 # Dashboard: http://localhost:8080 (V = voice callouts on/off)   Virtual console: http://localhost:8081   Logs: $LOG_DIR (default: a temp folder, printed at start)
@@ -34,7 +35,7 @@ for arg in "$@"; do
     --open)  OPEN=1 ;;
     --no-web) WEB=0 ;;
     --nav)   NAV=1 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg (see --help)"; exit 1 ;;
   esac
 done
@@ -72,7 +73,12 @@ SOLVE_ARGS=(--follow-sim --quiet)
 if [[ $STARNET == 1 ]]; then SOLVE_ARGS+=(--detector starnet); SOLVER_NAME=StarNet
 elif [[ $TUNED == 1 ]]; then SOLVE_ARGS+=(--max-area 5000); SOLVER_NAME=tuned
 else SOLVER_NAME=classical; fi
-[[ $NAV == 1 ]] && SOLVE_ARGS+=(--nav --nav-scan 3 --nav-reset-on-blind) && SOLVER_NAME="$SOLVER_NAME + planet nav"
+# planet nav: with the virtual console the scan runs when WHERE AM I? is pressed; a real board has no
+# such button, so there it scans continuously (both pause while the craft spins)
+if [[ $NAV == 1 ]]; then
+  SOLVE_ARGS+=(--nav --nav-scan 3 --nav-reset-on-blind); SOLVER_NAME="$SOLVER_NAME + planet nav"
+  [[ $BOARD == 0 && $WEB == 1 ]] && SOLVE_ARGS+=(--nav-scan-mode button)
+fi
 "$PY" -u -m camera.solve_live "${SOLVE_ARGS[@]}" > "$LOG_DIR/solve.log" 2>&1 &
 PIDS+=($!)
 

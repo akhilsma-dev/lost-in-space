@@ -17,7 +17,7 @@ HTTP:
                     "> STATUS LOCK"  bridge -> board (what the firmware would receive)
                     "< KNOB 512"     board -> bridge (so every open page shows the same knob)
                   on connect: "< KNOB n" and the latest STATUS / STAGE / ATT / SERVO lines
-  POST /input     body "BTN FLARE" or "KNOB <0-1023>" (what the firmware would send)
+  POST /input     body "BTN FLARE", "BTN NAV" (WHERE AM I?, virtual console only) or "KNOB <0-1023>"
 """
 import http.server
 import pathlib
@@ -29,7 +29,7 @@ import threading
 from bridge.serial_bridge import FakeBoard, log
 
 STATIC = pathlib.Path(__file__).resolve().parent / "static"
-INPUT_RE = re.compile(r"^(BTN FLARE|KNOB (\d{1,4}))$")
+INPUT_RE = re.compile(r"^(BTN FLARE|BTN NAV|KNOB (\d{1,4}))$")
 
 
 class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
@@ -111,7 +111,7 @@ class WebBoard(FakeBoard):
                 n = min(int(self.headers.get("Content-Length") or 0), 64)
                 line = self.rfile.read(n).decode(errors="ignore").strip().upper()
                 if not INPUT_RE.match(line):
-                    return self._send(400, b"expected 'BTN FLARE' or 'KNOB <0-1023>'")
+                    return self._send(400, b"expected 'BTN FLARE', 'BTN NAV' or 'KNOB <0-1023>'")
                 board.press(line)
                 self._send(204, b"")
 
@@ -122,7 +122,7 @@ class WebBoard(FakeBoard):
                 self.send_header("Connection", "keep-alive")
                 self.end_headers()
                 q = queue.Queue(maxsize=500)
-                for ev in [f"< KNOB {board.knob}"] + ["> " + board.latest[k] for k in ("STATUS", "STAGE", "ATT", "SERVO")
+                for ev in [f"< KNOB {board.knob}"] + ["> " + board.latest[k] for k in ("STATUS", "STAGE", "NAV", "ATT", "SERVO")
                                                      if k in board.latest]:
                     q.put(ev)
                 with board.clients_lock:

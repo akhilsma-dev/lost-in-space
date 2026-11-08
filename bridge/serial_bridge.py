@@ -2,11 +2,15 @@
 
   board  BTN FLARE        ->  UDP "flare"            -> sim/live.py (127.0.0.1:5006)
   board  KNOB <0-1023>    ->  UDP "rate <0..20>"     -> sim/live.py (only on meaningful change)
+  board  BTN NAV          ->  UDP "whereami"         -> camera.solve_live (127.0.0.1:5011, --nav-scan-mode button)
   solver JSON on UDP 5007 ->  STATUS / STAGE / ATT / SERVO -> board (throttled to 10 Hz)
 
 Solver JSON (one object per datagram or per line):
   {"status": "LOCK"|"SEARCH"|"LOST", "ra": deg, "dec": deg, "roll": deg}
-optional "pan"/"tilt" (deg) override the servo mapping; optional "stage" (e.g. "VERIFYING 3/6",
+optional "pan"/"tilt" (deg) override the servo mapping; optional "nav" (solve_live --nav) gives
+"NAV <state>" lines for the console's WHERE AM I? button (IDLE, SCAN k/8, HOLD (spinning), WAIT (no lock),
+FIX, NO FIX);
+optional "stage" (e.g. "VERIFYING 3/6",
 "DETUMBLING 12.0") goes to the board as "STAGE <text>". The virtual console shows it; the real
 firmware does not know STAGE yet, so it is only sent to a real board with --stage-lines.
 
@@ -221,6 +225,7 @@ class Bridge:
         self.sent_status = None
         self.sent_status_t = 0.0
         self.sent_stage = None
+        self.sent_nav = None
         self.servo_ref = None       # (ra, dec) the model was centred on
         self.ref_status = None      # last solver status seen by servo_target
         self.flare_t = -1e9
@@ -243,6 +248,10 @@ class Bridge:
             self.servo_ref = None       # re-centre the model on the next LOCK
             self.ref_status = None
             self.flare_t = time.monotonic()
+        elif line == "BTN NAV":
+            log("[board >] BTN NAV")
+            self.sock.sendto(b"whereami", ("127.0.0.1", self.args.nav_port))
+            log(f"[solver >] whereami (udp:{self.args.nav_port})")
         elif line.startswith("KNOB "):
             try:
                 n = int(line.split()[1])
@@ -287,6 +296,10 @@ class Bridge:
         if stage and self.args.stage_lines and stage != self.sent_stage:
             self.board.write(stage)
             self.sent_stage = stage
+        nav = self.nav_line(d.get("nav"))
+        if nav and self.args.stage_lines and nav != self.sent_nav:
+            self.board.write(nav)
+            self.sent_nav = nav
         if not new:
             return
         try:
@@ -307,6 +320,19 @@ class Bridge:
             return None
         text = "".join(c for c in str(stage).upper() if 32 <= ord(c) < 127).strip()[:40]
         return f"STAGE {text}" if text else None
+
+    @staticmethod
+    def nav_line(nav):
+        """'NAV <state>' for the console's WHERE AM I? button, from solve_live's "nav" block."""
+        if not isinstance(nav, dict) or not isinstance(nav.get("scan"), dict):
+            return None
+        sc = nav["scan"]
+        if sc.get("active"):
+            w = sc.get("wait") or ("spin" if sc.get("paused") else None)
+            return {"spin": "NAV HOLD", "lock": "NAV WAIT"}.get(w) or f"NAV SCAN {sc.get('step', 0)}/{sc.get('n', 8)}"
+        if nav.get("pos_km"):
+            return "NAV FIX"
+        return "NAV NO FIX" if nav.get("status") == "no fix" and sc.get("step") else "NAV IDLE"
 
     def servo_target(self, st, ra, dec, d):
         if "pan" in d and "tilt" in d:
@@ -389,6 +415,8 @@ def main():
     ap.add_argument("--truth-demo", action="store_true",
                     help="testing only: listen to sim truth on UDP 5005 and treat it as a LOCKed solver "
                          "(conflicts with anything else bound to 5005, e.g. the dashboard)")
+    ap.add_argument("--nav-port", type=int, default=5011,
+                    help="solve_live command port: BTN NAV (WHERE AM I?) sends 'whereami' here")
     ap.add_argument("--stage-lines", action=argparse.BooleanOptionalAction, default=None,
                     help="send 'STAGE <text>' lines (acquisition stage) to the board. Default: on for --fake / "
                          "--web, off for a real board (its firmware answers 'ERR unknown STAGE')")

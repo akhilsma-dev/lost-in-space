@@ -3,7 +3,7 @@
 Status as of 2026-11-08. Rule: work on a branch, a human reviews it, then it goes to main.
 
 ## Judge QA fixes (2026-11-08, see `docs/qa/judge-review-2026-11-08.md`, scored 6.3/10)
-- [ ] **Knob dead in `--nav` mode:** nav-scan `point` zeroes the tumble every 3 s. No scan pointings while knob rate > 0, or scan from a button
+- [x] **Knob dead in `--nav` mode:** scan pauses while spinning; WHERE AM I? button (virtual console) runs one sweep on demand; recovery back on in nav mode
 - [ ] **Put the CNN on screen:** `--starnet` in the demo if it holds 2-5 Hz, classical/CNN toggle, real numbers in the SOLVE RATE panel (no "pending")
 - [ ] Prepare the answer for StarNet's Stellarium result (38% vs tuned tetra3 100%)
 - [ ] Voice / glare from perception: callouts from solver state, not sim truth; glare that visibly drops confidence

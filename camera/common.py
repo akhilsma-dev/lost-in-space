@@ -22,6 +22,7 @@ RECORDINGS = ROOT / "recordings"
 SIM_CMD = ("127.0.0.1", 5006)
 TRUTH_PORT = 5009   # sim.live sends truth here for the camera tools; the dashboard has 5005
 BRIDGE_PORT = 5007  # bridge.serial_bridge listens for solver status here
+NAV_CMD_PORT = 5011 # solve_live --nav-scan-mode button listens here for "whereami" (from the bridge)
 ESTIMATE_PORT = 5008
 FRAME_PORT = 5010   # solve_live sends the frame it solved (small JPEG + header) to the dashboard
 

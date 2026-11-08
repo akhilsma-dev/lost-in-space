@@ -197,7 +197,7 @@ class NavMap:
             return None
         jd = (nav or {}).get("jd") or (truth or {}).get("jd") or pl.EPOCH_JD
         out = {"status": (nav or {}).get("status"), "n_cand": (nav or {}).get("n_cand"),
-               "planets": self._planets(jd)}
+               "scan": (nav or {}).get("scan"), "planets": self._planets(jd)}
         tp = (truth or {}).get("pos_km")
         if tp:
             out["truth_au"] = (pl.icrf_to_ecliptic(np.asarray(tp)) / pl.AU_KM).tolist()

@@ -430,7 +430,14 @@ function updateNavText() {
         : `<div><span class="k">CHECK</span>Earth not in the photos</div>`);
   }
   if ($("navCalc").innerHTML !== calc) $("navCalc").innerHTML = calc;
-  $("navNote").textContent = fix
+  const sc = n.scan;   // solve_live --nav-scan: ecliptic sweep progress (button mode: WHERE AM I?)
+  $("navNote").textContent = sc && sc.active && sc.mode === "button"
+    ? (sc.wait === "lock" ? `scan waiting for lock · step ${sc.step}/${sc.n}`
+      : sc.paused ? `scan on hold: spinning · step ${sc.step}/${sc.n}` : `scanning the ecliptic · step ${sc.step}/${sc.n}`)
+      + (fix ? ` · ${n.bodies.length} bodies so far` : ` · ${n.n_cand || 0} candidates`)
+    : sc && sc.paused ? "scan on hold: spinning"
+    : !fix && sc && sc.mode === "button" && !sc.step ? "press WHERE AM I? on the console"
+    : fix
     ? `${n.bodies.length} bodies: ${n.bodies.join(", ")}`
     : n.status === "no fix" ? `${n.n_cand || 0} candidates · no consistent fix yet`
     : `collecting planets · ${n.n_cand || 0} candidates`;

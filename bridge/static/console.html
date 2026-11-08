@@ -63,6 +63,16 @@ label, .lab { color: var(--dim); font-size: 10px; letter-spacing: .14em; font-we
   transform: translateY(0); transition: transform .05s, box-shadow .05s; }
 #flare:active, #flare.down { transform: translateY(6px); box-shadow: 0 1px 0 #5a0c06, 0 2px 4px rgba(0,0,0,.5), inset 0 2px 6px rgba(0,0,0,.35); }
 #flare:focus-visible { box-shadow: 0 7px 0 #5a0c06, 0 0 0 3px var(--search); }
+/* WHERE AM I? (sim only: position from planets; shown once the bridge sends NAV lines) */
+.navbtn { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+#where { border: none; cursor: pointer; border-radius: 6px; padding: 7px 12px; font: 800 11px var(--sans); letter-spacing: .12em;
+  color: #e6f0ff; background: linear-gradient(#2d5fb8, #1a3c7a); box-shadow: 0 4px 0 #0e2147, inset 0 1px 1px rgba(255,255,255,.3);
+  transform: translateY(0); transition: transform .05s, box-shadow .05s; outline: none; }
+#where:active, #where.down { transform: translateY(3px); box-shadow: 0 1px 0 #0e2147; }
+#where:focus-visible { box-shadow: 0 4px 0 #0e2147, 0 0 0 3px var(--search); }
+#where:disabled { cursor: default; filter: saturate(.4) brightness(.8); }
+#navState { font: 600 10px var(--mono); letter-spacing: .08em; color: var(--dim); min-height: 1em; }
+#navState.scan { color: var(--search); } #navState.fix { color: var(--lock); } #navState.hold { color: var(--lost); }
 
 /* servos */
 .servos { grid-area: servo; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -92,6 +102,8 @@ body.embed .indic .lab { margin: 0; }
 body.embed #knob { width: 118px; height: 118px; }
 body.embed #flare { width: 78px; height: 78px; font-size: 12px; }
 body.embed .guard { padding: 7px; }
+body.embed .btnwrap { gap: 6px; } body.embed .btnwrap > .lab { display: none; }
+body.embed #where { padding: 5px 8px; font-size: 10px; }
 body.embed .servos { grid-template-columns: 1fr; gap: 6px; min-width: 120px; }
 body.embed .dial { padding: 3px 6px 2px; }
 body.embed .dial svg { max-width: 150px; max-height: 58px; }
@@ -138,6 +150,7 @@ body.embed .dial svg { max-width: 150px; max-height: 58px; }
   <div class="btnwrap">
     <div class="guard"><button id="flare" aria-label="solar flare">FLARE</button></div>
     <span class="lab">SOLAR FLARE · SPACE</span>
+    <div class="navbtn" id="navBox" hidden><button id="where" aria-label="where am I: scan for planets">WHERE AM I?</button><span id="navState"></span></div>
   </div>
 
   <div class="servos">
@@ -167,7 +180,7 @@ const st = { status: "NO LINK", stage: "", ra: 0, dec: 0, roll: 0, haveAtt: fals
 
 // ---------------------------------------------------------------- serial monitor
 // latest line of each kind, in a fixed order, so 10 Hz ATT/SERVO don't scroll the presses away
-const LOG_ORDER = ["STATUS", "STAGE", "ATT", "SERVO", "BTN", "KNOB"], logLast = {};
+const LOG_ORDER = ["STATUS", "STAGE", "NAV", "ATT", "SERVO", "BTN", "KNOB"], logLast = {};
 let logDirty = false;
 function logLine(dir, text) {
   const kind = text.split(" ")[0];
@@ -235,6 +248,7 @@ function onLaptopLine(line) {
   st.lastRx = performance.now();
   if (p[0] === "STATUS" && ["LOCK", "LOST", "SEARCH"].includes(p[1])) setStatus(p[1]);
   else if (p[0] === "STAGE") st.stage = p.slice(1).join(" ");   // acquisition stage (bridge >= STAGE support)
+  else if (p[0] === "NAV") setNav(p.slice(1).join(" "));        // WHERE AM I? scan state (sim only)
   else if (p[0] === "ATT" && p.length >= 4) { [st.ra, st.dec, st.roll] = p.slice(1, 4).map(Number); st.haveAtt = true; }
   else if (p[0] === "SERVO" && p.length >= 3) {
     st.panT = Math.min(PAN[1], Math.max(PAN[0], +p[1]));
@@ -274,6 +288,21 @@ $("flare").addEventListener("click", (e) => { if (e.detail !== 0) flare(); });  
 $("flare").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); flare(); } });
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space" && !e.repeat && document.activeElement !== $("knob")) { e.preventDefault(); flare(); }
+});
+
+// ---------------------------------------------------------------- WHERE AM I? (sim only)
+function setNav(s) {
+  $("navBox").hidden = false;
+  const scanning = /^SCAN|^HOLD|^WAIT/.test(s);
+  $("where").disabled = scanning;
+  const el = $("navState");
+  el.textContent = s === "IDLE" ? "position unknown" : s.startsWith("SCAN") ? "scanning " + s.slice(5)
+    : s === "HOLD" ? "hold still: spinning" : s === "WAIT" ? "waiting for lock" : s === "FIX" ? "position fixed" : s === "NO FIX" ? "no fix: try again" : s.toLowerCase();
+  el.className = s.startsWith("SCAN") || s === "WAIT" ? "scan" : s === "FIX" ? "fix" : s === "HOLD" || s === "NO FIX" ? "hold" : "";
+}
+$("where").addEventListener("click", () => {
+  play(CLICK); send("BTN NAV");
+  const b = $("where"); b.classList.add("down"); setTimeout(() => b.classList.remove("down"), 120);
 });
 
 // ---------------------------------------------------------------- knob (vertical drag, wheel, arrows; double-click = 0)

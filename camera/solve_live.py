@@ -34,11 +34,16 @@ Position from planets (--nav; run sim.live --planets): after each LOCK, blobs th
 catalogue stars become planet candidates (camera.navigate); their inertial directions build up
 over frames and a background thread fixes the heliocentric position with an error ellipsoid.
 --nav-scan S also drives the scan: every S seconds it sends sim.live "point <ra> <dec> <roll>"
-(UDP 5006) for the next of 8 pointings along the ecliptic. Each estimate packet then carries
+(UDP 5006) for the next of 8 pointings along the ecliptic. Scan steps are only taken while LOCKed and
+while the measured spin is below --nav-scan-max-rate (a tumble dialled in on the console knob is left
+alone: 'point' would stop it). --nav-scan-mode button: no automatic scanning; a "whereami" datagram on
+UDP --nav-cmd-port (5011; the console's WHERE AM I? button via the bridge) forgets old sightings and
+runs one sweep of the 8 pointings; its sightings are kept until the next press. Each estimate packet then carries
   "nav": {"status": "collecting"|"no fix"|"fix", "n_cand", "jd", and with a fix: "pos_km",
           "cov_km2", "axes_km" (1-sigma), "bodies", "resid_rms_arcsec", "r_au", "earth_km",
           "earth_sigma_km", "age_s", "err_km" (vs the sim's hidden position, if known)}
-      .venv/bin/python -m camera.solve_live --follow-sim --nav --nav-scan 3
+      .venv/bin/python -m camera.solve_live --follow-sim --nav --nav-scan 3 [--nav-scan-mode button]
+  "nav" also carries "scan": {"mode", "active", "step", "n", "paused"} (paused = spinning, waiting).
 
 Output: one JSON line per frame on UDP 127.0.0.1:5008 (dashboard), and the same
 line on 5007 (bridge.serial_bridge -> console OLED/LED/servos; --bridge-port 0 = off)
@@ -62,7 +67,7 @@ import time
 import cv2
 import numpy as np
 
-from camera.common import (BRIDGE_PORT, CALIB, ESTIMATE_PORT, FRAME_PORT, RECORDINGS, TRUTH_PORT, TruthListener, centroids,
+from camera.common import (BRIDGE_PORT, CALIB, NAV_CMD_PORT, ESTIMATE_PORT, FRAME_PORT, RECORDINGS, TRUTH_PORT, TruthListener, centroids,
                            load_calib, load_tetra3, pointing_error_arcsec, roll_error_deg, warp_points)
 from sim.sky import SkyRenderer, checkerboard, from_radecroll, random_attitude, to_radecroll
 
@@ -306,14 +311,14 @@ class Acquisition:
             self.lost_t = t
         att = from_radecroll(float(res["RA"]), float(res["Dec"]), float(res["Roll"])) if conf is not None else None
 
-        jump = 0.0
+        jump, gap = 0.0, 0.0
         if att is not None:
             # body rate from consecutive good solves (frame-to-frame, so the tumble changing is followed);
             # jump = how far this solve is from the previous one carried forward at the old rate
             if t <= self.jump_ok_until:
                 self.w = np.zeros(3)                          # commanded repoint: carry on from the new attitude
             elif self.prev is not None and 0.02 < t - self.prev[0] < 0.6:
-                dt = t - self.prev[0]
+                dt = gap = t - self.prev[0]
                 jump = self.angle_deg(self.prev[1] * type(att).from_rotvec(self.w * dt), att)
                 w = (self.prev[1].inv() * att).as_rotvec() / dt
                 if np.linalg.norm(w) < math.radians(90):
@@ -321,9 +326,11 @@ class Acquisition:
             self.prev = (t, att)
 
         if self.locked:
-            if conf is None or jump > self.a.jump_tol:
+            # the rate may change between frames (knob): allow --jump-rate deg/s of change over the gap
+            tol = self.a.jump_tol + self.a.jump_rate * gap
+            if conf is None or jump > tol:
                 if conf is not None:
-                    print(f"[track] attitude jumped {jump:.1f} deg in one frame: LOST")
+                    print(f"[track] attitude jumped {jump:.1f} deg in one frame (tol {tol:.1f}): LOST")
                 self.locked, self.lost_t = False, t
                 self.reset()
                 return "LOST", 0.0, "LOST"
@@ -543,6 +550,9 @@ def main():
                      help="deg/s: no verification above this measured rate (stage RATE HIGH); LOCK tracks faster")
     acq.add_argument("--jump-tol", type=float, default=5.0,
                      help="deg: while LOCKed, a frame-to-frame attitude jump larger than this gives LOST")
+    acq.add_argument("--jump-rate", type=float, default=30.0,
+                     help="deg/s: --jump-tol grows by this times the frame gap (a knob change between frames is "
+                          "not a jump; flare / false-match jumps are tens of degrees)")
     acq.add_argument("--verify-timeout", type=float, default=2.5,
                      help="s without a good solve while VERIFYING before the candidate is dropped")
     rec = ap.add_argument_group("recovery maneuvers (while not locked)")
@@ -564,6 +574,14 @@ def main():
     nav.add_argument("--nav", action="store_true", help="find planets after each lock and fix the position")
     nav.add_argument("--nav-scan", type=float, default=0.0,
                      help="drive sim.live through 8 ecliptic pointings, this many s each (0 = don't)")
+    nav.add_argument("--nav-scan-mode", choices=["auto", "button"], default="auto",
+                     help="auto: keep scanning; button: one sweep per 'whereami' on --nav-cmd-port")
+    nav.add_argument("--nav-scan-max-rate", type=float, default=0.5,
+                     help="deg/s: no scan step while the measured spin is faster (keeps the knob's tumble)")
+    nav.add_argument("--nav-max-rate", type=float, default=2.0,
+                     help="deg/s: don't look for planets while spinning faster (streaked frames)")
+    nav.add_argument("--nav-cmd-port", type=int, default=NAV_CMD_PORT,
+                     help="UDP port for 'whereami' (with --nav-scan-mode button)")
     nav.add_argument("--nav-sigma", type=float, default=10.0, help="planet direction error, arcsec (ellipsoid)")
     nav.add_argument("--nav-memory", type=float, default=0.0,
                      help="forget candidates not seen for this long, s (0 = 1.5 scan cycles with --nav-scan, else 60)")
@@ -599,9 +617,7 @@ def main():
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
     recovery = None
-    if a.recover and a.nav and a.nav_scan > 0:
-        print("[recover] off: --nav-scan drives the sim's attitude")
-    elif a.recover:
+    if a.recover:   # never overlaps the nav scan: recovery acts only while not LOCKed, the scan only while LOCKed
         if isinstance(src, SimSource):
             send_rate = src.set_rate
         else:
@@ -611,6 +627,15 @@ def main():
     t_start, t_unlock, stage_prev = None, None, None
     frames = FrameSender(a.frame_port, a.frame_w, a.frame_hz) if a.frame_port else None
     navi, scan_i, scan_t, nav_print, nav_t, was_blind = None, 0, 0.0, 0.0, 0.0, False
+    N_SCAN = 8
+    button = a.nav and a.nav_scan > 0 and a.nav_scan_mode == "button"
+    sweep_left, scan_paused = 0, False         # button mode: pointings left in the current sweep
+    nav_in = None
+    if button:
+        nav_in = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        nav_in.bind(("127.0.0.1", a.nav_cmd_port))
+        nav_in.setblocking(False)
+        print(f"[nav] scan on demand: 'whereami' on UDP {a.nav_cmd_port} (console WHERE AM I?)")
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0, "acq": []}
     shot, shot_lock = None, False
     try:
@@ -660,25 +685,54 @@ def main():
                     navi.reset()
                     print("[nav] sensor blinded: forgetting sightings, searching for the position again")
                 was_blind = blind
-                if a.nav_scan > 0 and status == "LOCK" and time.time() - scan_t > a.nav_scan:   # next scan pointing
-                    solver.acq.expect_jump(t)          # (only while locked: no scanning while lost)
+                while nav_in is not None:
+                    try:
+                        cmd = nav_in.recv(256).decode(errors="ignore").strip().lower()
+                    except BlockingIOError:
+                        break
+                    if cmd == "whereami" and sweep_left == 0:
+                        if navi is not None:
+                            navi.reset()
+                        sweep_left, scan_i, scan_t = N_SCAN, 0, 0.0
+                        print(f"[nav] WHERE AM I?: sweeping {N_SCAN} pointings along the ecliptic")
+                # a scan step teleports the sim ('point' also stops its tumble), so only take one while
+                # locked (no scanning while lost) and not spinning (the knob's tumble stays)
+                spin = math.degrees(np.linalg.norm(solver.acq.w))
+                want = a.nav_scan > 0 and (not button or sweep_left > 0)
+                wait = None if not want else "lock" if status != "LOCK" else "spin" if spin > a.nav_scan_max_rate else None
+                paused = wait == "spin"
+                if paused != scan_paused:
+                    scan_paused = paused
+                    print(f"[nav] scan paused: spinning {spin:.1f} deg/s" if paused else "[nav] scan resumed")
+                if want and wait is None and time.time() - scan_t > a.nav_scan:
+                    solver.acq.expect_jump(t)
                     from camera.navigate import ecliptic_scan_radec
                     ra_, dec_, roll_ = ecliptic_scan_radec(scan_i)
                     out.sendto(f"point {ra_:.4f} {dec_:.4f} {roll_:.3f}".encode(), ("127.0.0.1", a.cmd_port))
                     scan_i, scan_t = scan_i + 1, time.time()
+                    if button:
+                        sweep_left -= 1
+                # the last pointing still needs its dwell before the sweep counts as done
+                active = button and (sweep_left > 0 or (scan_i > 0 and time.time() - scan_t < a.nav_scan))
                 if status == "LOCK":
                     if navi is None:
                         from camera.navigate import CandidateFinder, LiveNavigator
                         navi = LiveNavigator(CandidateFinder(src.sw, src.sh, fov, src.H), a.nav_jd,
                                              sigma_arcsec=a.nav_sigma,
-                                             memory_s=a.nav_memory or (12 * a.nav_scan if a.nav_scan > 0 else 60.0))
+                                             memory_s=a.nav_memory or (1e9 if button else
+                                                                       12 * a.nav_scan if a.nav_scan > 0 else 60.0))
                         print(f"[nav] navigator ready ({src.sw}x{src.sh}, FOV {fov} deg)")
                     if truth and truth.get("jd"):
                         navi.jd = truth["jd"]   # the spacecraft clock; the sim's epoch
-                    if time.time() - nav_t >= a.nav_every:   # the candidate pass costs ~100 ms
+                    # the candidate pass costs ~100 ms; skip it while spinning (blurred frames give junk candidates)
+                    if time.time() - nav_t >= a.nav_every and spin <= a.nav_max_rate:
                         nav_t = time.time()
                         navi.observe(gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)
                 msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
+                if a.nav_scan > 0:
+                    msg["nav"]["scan"] = {"mode": a.nav_scan_mode, "active": bool(active) if button else True,
+                                          "step": min(scan_i, N_SCAN) if button else scan_i % N_SCAN,
+                                          "n": N_SCAN, "paused": scan_paused, "wait": wait}
                 nv = msg["nav"]
                 if time.time() - nav_print > 5:
                     nav_print = time.time()

@@ -84,9 +84,10 @@ Lost-in-space acquisition takes a believable 5-6 s and every step is real work:
 | `SEARCH SLEW` | recovery: no stable lock for `--recover-after` (8 s) at rest and no candidate being verified: `--slew-rate` (6 deg/s) for `--slew-time` (3 s) to a new patch of sky, then rate 0 and the clock restarts. Repeats while lost |
 
 Recovery (`--recover`, default on; `--no-recover` removes it) sends only the sim's existing `rate <dps>`
-command to UDP 5006 (`--cmd-port`; with `--sim` it drives the internal sim). It is off when `--nav --nav-scan`
-drives the sim's attitude; the scan then only steps while LOCKed, and each commanded `point` is an expected
-jump (it does not count as LOST). It never acts while LOCKed,
+command to UDP 5006 (`--cmd-port`; with `--sim` it drives the internal sim). It works alongside `--nav --nav-scan`:
+the scan only steps while LOCKed and not spinning, recovery only acts while not LOCKed, and each commanded
+`point` is an expected jump (it does not count as LOST). While LOCKed, the jump check allows `--jump-tol` (5 deg)
+plus `--jump-rate` (30 deg/s) times the frame gap, so a sudden knob turn at a low frame rate is not a jump. It never acts while LOCKed,
 so tumble dialled in on the console knob during LOCK is left alone. The recovery clock runs from the last
 *stable* lock (held `--stable-lock` 3 s) so a flapping lock still gets a maneuver. The knob on the console keeps
 its position after a detumble (the sim then tumbles at 0 until the knob is moved again).
@@ -275,7 +276,13 @@ demo/fake_demo.sh --nav        # everything, no camera; dashboard POSITION panel
   not seen for `--nav-memory` s (default 60). A background thread re-solves the position whenever
   the list changes.
   - `--nav-scan 3` sends sim.live a `point` command every 3 s, for 8 pointings along the ecliptic.
-    A full scan takes 24 s.
+    A full scan takes 24 s. Steps are only taken while LOCKed and while the spin measured from the solves
+    is below `--nav-scan-max-rate` (0.5 deg/s): `point` stops the sim's tumble, so scanning while the console
+    knob spins the craft used to cancel the knob within 3 s.
+  - `--nav-scan-mode button` (what `fake_demo.sh --nav` uses with the virtual console): no automatic scan.
+    WHERE AM I? on the console sends `whereami` (bridge → UDP 5011, `--nav-cmd-port`); the solver forgets
+    old sightings and runs one 8-pointing sweep. Sightings are kept until the next press (or a flare with
+    `--nav-reset-on-blind`). The `nav` block carries `scan`: `{mode, active, step, n, paused}`.
   - Every estimate packet carries a `nav` block: position, covariance, 1σ axes, bodies used,
     distance from the Sun and to Earth (± the 1σ along that line), and `err_km` against the
     hidden truth.
