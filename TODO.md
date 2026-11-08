@@ -74,9 +74,9 @@ Status as of 2026-11-08. Rule: work on a branch, a human reviews it, then it goe
 ## Star finder switch (branch claude/model-switch)
 - [x] Live CLASSIC / TUNED / StarNet switch in the SOLVE RATE panel, LOCK HELD per model, benchmark rows (`fake_demo.sh --models`)
 - [x] `fake_demo.sh --webcam`: the solver films the sim through the synthetic webcam
-- [ ] **Coast through single-frame dropouts while LOCKed** (carry the attitude at the measured rate for up to ~0.5 s).
-      Without it no model holds lock for long at 20 deg/s through the webcam (one bad frame = LOST), so the live
-      StarNet vs tetra3 contrast is luck. With it: StarNet (97% frames) holds, tetra3 (51%) still drops.
+- [x] **Coast through dropouts while LOCKed** (`--coast 1.5` s, stage COASTING; branch claude/coasting). Dropouts
+      through the webcam turned out to be 0.7-0.8 s runs of bad frames, not single frames, so 0.5 s was too short.
+      Through the webcam at 20 deg/s the lock now holds (tuned tetra3 and StarNet); a flare is still LOST at once.
 
 ## To add if time: getting from A to B
 - [ ] **Point at a target (attitude A → B):** a console/dashboard target picker (a named star, Earth, a planet).

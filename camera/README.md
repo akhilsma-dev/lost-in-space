@@ -148,8 +148,22 @@ webcam), and a lock survives the switch. Estimates carry `camera` and `cameras`.
 Measured live at 20 deg/s through the webcam (25 s per model, 2026-11-08): with tetra3 (classic or tuned) the
 lock broke within seconds and recovery detumbled the craft; StarNet held LOCK for the full 25 s in one run and lost
 it in sparse sky in another (25-42 stars found, confidence 0.3-0.6). StarNet's benchmark is 97% correct frames,
-and one bad frame ends a LOCK, so at ~10 frames/s it cannot hold lock for long at 20 deg/s either: coasting
-through single-frame dropouts would make the difference show reliably (see TODO).
+and one bad frame ended a LOCK, so at ~10 frames/s it could not hold lock for long at 20 deg/s either.
+
+**With coasting (`--coast`, 2026-11-08)**, through the webcam (`fake_demo.sh --models --webcam`, `--no-recover`),
+lock held per 30 s trial after locking at rest (2 trials each, ~5-9 solves/s):
+
+| | 10 deg/s | 15 deg/s | 20 deg/s | lock at rest |
+|---|---|---|---|---|
+| tuned tetra3, `--coast 0` | 8 s, 30 s | 6 s, 1 s | 0.6 s, 0.9 s | 5.2-6.4 s |
+| tuned tetra3, coast 1.5 s | 30, 30 | 30, 30 | 30, 30 | 5.4 s |
+| StarNet, `--coast 0` | 15 s, 30 s | 15 s, 30 s | 18 s, 26 s | 5.3-6.5 s |
+| StarNet, coast 1.5 s | 30, 30 | 30, 30 | 30, 30 | 5.4 s |
+
+So coasting, not the star finder, is what holds the lock at speed; without it StarNet holds clearly longer than
+tuned tetra3 (the visible model difference is with `--coast 0`). Other runs varied with the sky patch: tuned
+tetra3 with coasting also lost lock at 20 deg/s after 2-9 s in one session. Flare: LOST 0.2-0.7 s after the
+button (whiteout), relock ~6 s. Quick demo check (StarNet, recovery on): 15 and 20 deg/s 100% LOCK for 20 s each.
 
 ### Frame rate (`--follow-sim`, 2026-11-08)
 
