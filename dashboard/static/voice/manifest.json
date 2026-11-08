@@ -1,190 +1,190 @@
 {
  "clips": {
   "acc_10": {
-   "engine": "say",
-   "file": "acc_10.m4a",
+   "engine": "elevenlabs",
+   "file": "acc_10.mp3",
    "text": "Pointing error under ten arc seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "acc_20": {
-   "engine": "say",
-   "file": "acc_20.m4a",
+   "engine": "elevenlabs",
+   "file": "acc_20.mp3",
    "text": "Pointing error under twenty arc seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "acc_30": {
-   "engine": "say",
-   "file": "acc_30.m4a",
+   "engine": "elevenlabs",
+   "file": "acc_30.mp3",
    "text": "Pointing error under thirty arc seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "acc_5": {
-   "engine": "say",
-   "file": "acc_5.m4a",
+   "engine": "elevenlabs",
+   "file": "acc_5.mp3",
    "text": "Pointing error under five arc seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "acc_60": {
-   "engine": "say",
-   "file": "acc_60.m4a",
+   "engine": "elevenlabs",
+   "file": "acc_60.mp3",
    "text": "Pointing error under sixty arc seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "flare": {
-   "engine": "say",
-   "file": "flare.m4a",
+   "engine": "elevenlabs",
+   "file": "flare.mp3",
    "text": "Solar flare! Sensor blinded.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "glare_off": {
-   "engine": "say",
-   "file": "glare_off.m4a",
+   "engine": "elevenlabs",
+   "file": "glare_off.mp3",
    "text": "Glare cleared.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "glare_on": {
-   "engine": "say",
-   "file": "glare_on.m4a",
+   "engine": "elevenlabs",
+   "file": "glare_on.mp3",
    "text": "Glare detected.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "lock_again": {
-   "engine": "say",
-   "file": "lock_again.m4a",
+   "engine": "elevenlabs",
+   "file": "lock_again.mp3",
    "text": "Lock reacquired.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "lock_first": {
-   "engine": "say",
-   "file": "lock_first.m4a",
+   "engine": "elevenlabs",
+   "file": "lock_first.mp3",
    "text": "Attitude lock acquired.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "lost": {
-   "engine": "say",
-   "file": "lost.m4a",
+   "engine": "elevenlabs",
+   "file": "lost.mp3",
    "text": "Star tracker has lost lock.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "no_signal": {
-   "engine": "say",
-   "file": "no_signal.m4a",
+   "engine": "elevenlabs",
+   "file": "no_signal.mp3",
    "text": "Telemetry lost.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "online": {
-   "engine": "say",
-   "file": "online.m4a",
+   "engine": "elevenlabs",
+   "file": "online.mp3",
    "text": "Mission control online. Star tracker standing by.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "rate_0": {
-   "engine": "say",
-   "file": "rate_0.m4a",
+   "engine": "elevenlabs",
+   "file": "rate_0.mp3",
    "text": "Spacecraft stabilized.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "rate_10": {
-   "engine": "say",
-   "file": "rate_10.m4a",
+   "engine": "elevenlabs",
+   "file": "rate_10.mp3",
    "text": "Tumble rate ten degrees per second.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "rate_15": {
-   "engine": "say",
-   "file": "rate_15.m4a",
+   "engine": "elevenlabs",
+   "file": "rate_15.mp3",
    "text": "Tumble rate fifteen degrees per second.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "rate_20": {
-   "engine": "say",
-   "file": "rate_20.m4a",
+   "engine": "elevenlabs",
+   "file": "rate_20.mp3",
    "text": "Tumble rate twenty degrees per second.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "rate_5": {
-   "engine": "say",
-   "file": "rate_5.m4a",
+   "engine": "elevenlabs",
+   "file": "rate_5.mp3",
    "text": "Tumble rate five degrees per second.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_1": {
-   "engine": "say",
-   "file": "relock_1.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_1.mp3",
    "text": "Lock reacquired in one second.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_10": {
-   "engine": "say",
-   "file": "relock_10.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_10.mp3",
    "text": "Lock reacquired in ten seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_2": {
-   "engine": "say",
-   "file": "relock_2.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_2.mp3",
    "text": "Lock reacquired in two seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_3": {
-   "engine": "say",
-   "file": "relock_3.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_3.mp3",
    "text": "Lock reacquired in three seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_4": {
-   "engine": "say",
-   "file": "relock_4.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_4.mp3",
    "text": "Lock reacquired in four seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_5": {
-   "engine": "say",
-   "file": "relock_5.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_5.mp3",
    "text": "Lock reacquired in five seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_6": {
-   "engine": "say",
-   "file": "relock_6.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_6.mp3",
    "text": "Lock reacquired in six seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_7": {
-   "engine": "say",
-   "file": "relock_7.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_7.mp3",
    "text": "Lock reacquired in seven seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_8": {
-   "engine": "say",
-   "file": "relock_8.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_8.mp3",
    "text": "Lock reacquired in eight seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "relock_9": {
-   "engine": "say",
-   "file": "relock_9.m4a",
+   "engine": "elevenlabs",
+   "file": "relock_9.mp3",
    "text": "Lock reacquired in nine seconds.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "search": {
-   "engine": "say",
-   "file": "search.m4a",
+   "engine": "elevenlabs",
+   "file": "search.mp3",
    "text": "Searching the sky.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "signal_back": {
-   "engine": "say",
-   "file": "signal_back.m4a",
+   "engine": "elevenlabs",
+   "file": "signal_back.mp3",
    "text": "Telemetry restored.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   },
   "unstable": {
-   "engine": "say",
-   "file": "unstable.m4a",
+   "engine": "elevenlabs",
+   "file": "unstable.mp3",
    "text": "Lock unstable.",
-   "voice": "say"
+   "voice": "pNInz6obpgDQGcFmaJgB"
   }
  }
 }

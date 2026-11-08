@@ -15,8 +15,8 @@ python -m voice.generate               # ElevenLabs, about 30 short clips
 ```
 
 - `--voice <id>` (or `ELEVENLABS_VOICE_ID`) picks the voice; the default is the premade "Adam".
-- `--placeholder` makes stand-in clips with macOS `say` (offline, no key). The repo ships these
-  until the ElevenLabs ones are generated; the voice chip's tooltip says "placeholder" while they're in use.
+- `--placeholder` makes stand-in clips with macOS `say` (offline, no key); the voice chip's tooltip
+  says "placeholder" while they're in use. The committed clips are ElevenLabs ("Adam").
 - Unchanged clips are skipped; `--force` redoes them, `--only flare,lost` redoes just those.
 - `--list` prints every callout. The text lives in `voice/lines.py`.
 
