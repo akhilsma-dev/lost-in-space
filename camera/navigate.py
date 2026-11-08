@@ -571,6 +571,8 @@ class LiveNavigator:
             "pos_km": [round(float(v), 1) for v in P], "cov_km2": np.round(cov, 1).tolist(),
             "axes_km": [round(float(v), 1) for v in f["axes_km"]],
             "bodies": f["names"], "resid_rms_arcsec": round(float(np.sqrt(np.mean(f["resid_arcsec"] ** 2))), 2),
+            "resid_by_body": {n: round(float(r), 2) for n, r in zip(f["names"], f["resid_arcsec"])},
+            "earth_pos_km": [round(float(v), 1) for v in earth],
             "r_au": round(float(np.linalg.norm(P) / pl.AU_KM), 6),
             "earth_km": round(float(np.linalg.norm(de)), 1),
             "earth_sigma_km": round(float(np.sqrt(u @ cov @ u)), 1),

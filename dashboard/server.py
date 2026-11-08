@@ -216,6 +216,18 @@ class NavMap:
             if tp:
                 e = pl.icrf_to_ecliptic(np.asarray(tp) - P)
                 out["err_ecl_km"] = e.tolist()
+            # distance to Earth, step by step: |P - X_earth| with X_earth from the ephemeris
+            if nav.get("earth_pos_km"):
+                XE = np.asarray(nav["earth_pos_km"])
+                res = nav.get("resid_by_body") or {}
+                seen = next((b for b in res if "Earth" in b.split("+")), None)
+                out["earth_calc"] = {
+                    "us_au": (pl.icrf_to_ecliptic(P) / pl.AU_KM).tolist(),
+                    "earth_au": (pl.icrf_to_ecliptic(XE) / pl.AU_KM).tolist(),
+                    "km": float(np.linalg.norm(XE - P)), "sigma_km": nav.get("earth_sigma_km"),
+                    "light_min": float(np.linalg.norm(XE - P) / pl.C_KM_S / 60),
+                    "truth_km": float(np.linalg.norm(XE - np.asarray(tp))) if tp else None,
+                    "seen_as": seen, "resid_arcsec": res.get(seen) if seen else None}
         return out
 
 

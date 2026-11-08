@@ -111,6 +111,15 @@ table.att td:first-child { text-align: left; font: 700 12px var(--sans); letter-
 .navread .num { font-size: 19px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .navread .sub { font: 500 12px var(--mono); color: var(--dim); white-space: nowrap; }
 #navPanel.hold .navread .num { color: var(--dim); }
+.navcalc { font: 500 11.5px var(--mono); line-height: 1.5; color: var(--dim); border: 1px solid var(--edge);
+  border-radius: 6px; padding: 5px 8px; margin-bottom: 6px; white-space: nowrap; overflow: hidden; }
+.navcalc:empty { display: none; }
+.navcalc .k { display: inline-block; width: 6.4em; color: var(--dim); font-family: var(--sans); font-weight: 700;
+  font-size: 10px; letter-spacing: .1em; }
+.navcalc .v { color: var(--text); }
+.navcalc .earth { color: #5aa8ff; }
+.navcalc .ok { color: var(--lock); }
+.navcalc .warn { color: var(--search); }
 #navHold { font: 700 11px var(--sans); letter-spacing: .12em; color: var(--search); }
 /* position mode: the map takes the spacecraft panel's place */
 body.with-nav #dynPanel, body.with-nav #att3dPanel { display: none; }

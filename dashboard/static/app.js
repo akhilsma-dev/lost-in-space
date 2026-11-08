@@ -390,6 +390,27 @@ function updateNavText() {
   $("navErr").textContent = fix && n.err_km != null ? fmtKm(n.err_km) : "—";
   $("navErr").style.color = hold || !fix || n.err_km == null ? C.dim : n.axes_km && n.err_km < 3 * n.axes_km[0] ? C.lock : C.search;
   $("navSig").textContent = fix && n.axes_km ? "1σ ≤ " + fmtKm(n.axes_km[0]) : "";
+  // the distance-to-Earth working: position from the sightings, Earth from the ephemeris, subtract
+  const ec = fix && n.earth_calc;
+  let calc = "";
+  if (ec) {
+    const v3 = (v) => `(${v.map((x) => (x >= 0 ? "+" : "") + x.toFixed(4)).join(", ")}) AU`;
+    const d = ec.us_au.map((u, i) => ec.earth_au[i] - u);
+    calc =
+      `<div><span class="k">US</span><span class="v">${v3(ec.us_au)}</span> photos</div>` +
+      `<div><span class="k">EARTH</span><span class="earth">${v3(ec.earth_au)}</span> ephemeris</div>` +
+      `<div><span class="k">DISTANCE</span>√(${d.map((x) => (x < 0 ? `(${x.toFixed(3)})` : x.toFixed(3)) + "²").join("+")}) AU ` +
+      `= <span class="v">${(ec.km / 1e6).toFixed(3)} Mkm</span></div>` +
+      `<div><span class="k">LIGHT</span><span class="v">${ec.light_min.toFixed(1)} min</span>` +
+      (ec.truth_km != null
+        ? ` · truth ${(ec.truth_km / 1e6).toFixed(3)} Mkm, ` +
+          `<span class="${Math.abs(ec.km - ec.truth_km) < 3 * (ec.sigma_km || 1e9) ? "ok" : "warn"}">off ${fmtKm(Math.abs(ec.km - ec.truth_km))}</span>`
+        : "") + `</div>` +
+      (ec.seen_as
+        ? `<div><span class="k">CHECK</span>${ec.seen_as} seen where predicted (<span class="ok">${ec.resid_arcsec.toFixed(1)}″</span>)</div>`
+        : `<div><span class="k">CHECK</span>Earth not in the photos</div>`);
+  }
+  if ($("navCalc").innerHTML !== calc) $("navCalc").innerHTML = calc;
   $("navNote").textContent = fix
     ? `${n.bodies.length} bodies: ${n.bodies.join(", ")}`
     : n.status === "no fix" ? `${n.n_cand || 0} candidates · no consistent fix yet`
@@ -439,6 +460,18 @@ function drawNav() {
     ctx.fillStyle = PLANET_COL[b] || C.dim; ctx.globalAlpha = used.has(b) ? 1 : 0.45;
     ctx.beginPath(); ctx.arc(px, py, inside ? 3.5 : 3, 0, 2 * Math.PI); ctx.fill();
     ctx.fillText(lab, px + 6, py - 7); ctx.globalAlpha = 1;
+  }
+  // the distance being reported: estimate -> Earth, labelled
+  if (est && pl.Earth && n.earth_calc) {
+    const E = pl.Earth;
+    ctx.strokeStyle = "#5aa8ff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X(est), Y(est)); ctx.lineTo(X(E), Y(E)); ctx.stroke();
+    const mx = (X(est) + X(E)) / 2, my = (Y(est) + Y(E)) / 2, lab = (n.earth_calc.km / 1e6).toFixed(1) + " Mkm";
+    ctx.font = "700 12px -apple-system, Helvetica, Arial"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const tw = ctx.measureText(lab).width;
+    ctx.fillStyle = "rgba(7,9,15,.85)"; ctx.fillRect(mx - tw / 2 - 4, my - 9, tw + 8, 18);
+    ctx.fillStyle = "#5aa8ff"; ctx.fillText(lab, mx, my);
+    ctx.font = "600 11px -apple-system, Helvetica, Arial";
   }
   if (tru) {
     ctx.strokeStyle = C.truth; ctx.lineWidth = 1.5; ctx.setLineDash([3, 2]);
