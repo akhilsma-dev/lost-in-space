@@ -141,9 +141,12 @@ the spacecraft, so three or more give the position P.
 .venv/bin/python -m camera.navigate --bench              # 24 positions, geometry + rendered, ~1 min
 .venv/bin/python -m camera.navigate --bench --mode geometry --n 200
 .venv/bin/python -m camera.navigate --bench --mode rendered --n 6 --save-frames
+.venv/bin/python -m camera.navigate --bench --mode rendered --noise 3 --tag noise3
+.venv/bin/python -m camera.navigate --bench --mode rendered --sim-camera --rendered-sigma 10 --tag simcam
 ```
 
-Writes `camera/out/nav_bench.md` (summary + per-position table), `nav_bench.csv`, `nav_bench.png`.
+Writes `camera/out/nav_bench.md` (summary + per-position table), `nav_bench.csv`, `nav_bench.png`
+(`nav_bench_<tag>.*` with `--tag`).
 
 Pieces:
 - `sim/planets.py`: `Ephemeris.positions(jd)` (heliocentric ICRF km for the Sun, Mercury, Venus,
@@ -175,25 +178,39 @@ rendered. Each frame is solved with the solve_live settings: centroids with max_
 max_area 3000 finds the planets: anything brighter than about mag 1 renders larger than 100 px
 and tetra3's star filter drops it. Blobs more than 4 px from every catalogue star are candidates.
 
-Results (24 positions, `--seed 1`; `camera/out/nav_bench.md`):
+Results (the same 24 hidden positions in every run, `--seed 1`; files in `camera/out/`):
 
-| mode | Sun | fixes | median err | 90% err | median 1σ ellipsoid | mean NEES | ID ok |
+| run | Sun | fixes | median err | 90% err | median 1σ ellipsoid | mean NEES | ID ok |
 |---|---|---:|---:|---:|---|---:|---:|
-| geometry, 20″ noise | no | 23/24 | 25,600 km (1.7e-4 AU) | 147,000 km | 31,000 / 9,400 / 8,900 km | 3.7 | 23/23 |
-| geometry, 20″ noise | 20″ | 24/24 | 18,200 km | 43,000 km | 19,000 / 9,200 / 8,600 km | 2.6 | 24/24 |
-| rendered | no | 23/24 | 8,100 km (5.4e-5 AU) | 18,100 km | 8,900 / 2,300 / 2,300 km | 3.2 | 23/23 |
-| rendered | 20″ | 24/24 | 7,100 km | 17,400 km | 8,300 / 2,700 / 2,500 km | 3.0 | 24/24 |
+| geometry, 20″ noise | no | 24/24 | 31,600 km (2.1e-4 AU) | 129,000 km | 75,600 / 13,100 / 12,500 km | 2.6 | 24/24 |
+| geometry, 20″ noise | 20″ | 24/24 | 28,900 km | 82,000 km | 34,100 / 11,500 / 11,100 km | 3.8 | 24/24 |
+| rendered, clean screen | no | 24/24 | 10,100 km (6.7e-5 AU) | 16,800 km | 20,600 / 3,800 / 3,600 km | 2.1 | 24/24 |
+| rendered, clean screen | 20″ | 24/24 | 9,700 km | 25,300 km | 16,200 / 3,800 / 3,600 km | 2.3 | 24/24 |
+| rendered, `--noise 3` | no | 24/24 | 7,600 km | 18,900 km | 20,600 / 3,800 / 3,600 km | 2.3 | 24/24 |
+| rendered, `--noise 3` | 20″ | 24/24 | 11,900 km | 22,100 km | 16,200 / 3,800 / 3,600 km | 2.6 | 24/24 |
+| rendered, `--sim-camera` | no | 24/24 | 22,900 km (1.5e-4 AU) | 38,200 km | 41,100 / 7,600 / 7,300 km | 40.7 | 23/24 |
+| rendered, `--sim-camera` | 20″ | 24/24 | 15,100 km | 38,700 km | 23,300 / 7,300 / 6,900 km | 2.3 | 24/24 |
 
-- At 20″ the geometry mode matches the feasibility review's 10,000–30,000 km estimate.
-- The rendered sim does better because its planet directions are better than 20″:
-  median 1.9″ after the attitude refit. The display is noise-free and its pixel geometry is
-  exact. A real camera on a real screen will be closer to the geometry row.
-- NEES ≈ 3 means the ellipsoid is honest. Rendered used σ = 5″.
-- The long axis of the ellipsoid points out of the ecliptic, because every planet lies near
-  that plane (feasibility review point 5).
-- One position had no fix: only Mars and Jupiter were visible, and two lines are not enough
-  without the Sun.
-- Identification was 100% correct on every fix.
+Planet direction errors after the attitude refit: 1.9″ median on the clean screen, 3.1″ with
+noise 3, 8.0″ through the fake webcam (keystone, defocus, LCD glow, JPEG; the homography is
+fitted to 0.12 px). Every one of the 192 scan frames locked in each rendered run.
+
+- **Clean and noise 3:** about 8,000–12,000 km median.
+- **Fake camera:** about 15,000–23,000 km.
+- **Feasibility review:** both are inside or below its 10,000–30,000 km estimate. Geometry mode
+  at 20″ is about 30,000 km, because those positions see a median of 5 bodies.
+- **The ellipsoid is honest:** NEES ≈ 2–4. The ellipsoid σ was 5″ for the screen runs and 10″
+  for the fake camera.
+- **Wrong ID:** one fake-camera position (planets only) gave its partly merged Earth/Moon blob a
+  334″ direction error. It was identified as Earth, and the fix was 700,000 km off; this outlier
+  alone causes the NEES of 40.
+- **Weak axis:** the long axis of the ellipsoid points out of the ecliptic, because all the
+  planets lie near it (feasibility review point 5).
+- **Earth/Moon ambiguity:** Earth and the Moon can swap and still give a self-consistent fix
+  about 350,000 km off. Before the identifier also seeded on the Earth+Moon blend, this happened
+  once per run.
+- **Fake-camera fixes:** the edge of the screen's glow shows up as a row of blobs (dropped
+  within 10 px of the edge). Noise blobs: only the 8 brightest unmatched blobs per frame are kept.
 
 Next steps (not done):
 - sim.live: a hidden position as well as the hidden attitude, with planets drawn through `render(extra=...)`
@@ -201,4 +218,5 @@ Next steps (not done):
 - A `point <ra> <dec>` command on UDP 5006, so the navigator can drive its own scan.
 - solve_live / a navigator process that collects candidates across the scan and publishes P and its covariance.
 - A dashboard solar-system map: true P, estimated P, the ellipsoid, and the sighted bodies.
-- Test with `--noise` and through `camera.fakecam`, then on the real camera.
+- A photometric check (blob brightness vs predicted magnitude) to rule out Earth/Moon swaps.
+- The real camera.

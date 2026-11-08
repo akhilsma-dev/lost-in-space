@@ -23,7 +23,13 @@ Offline benchmark (no camera, no sim.live):
   .venv/bin/python -m camera.navigate --bench                 # geometry + rendered, 24 positions
   .venv/bin/python -m camera.navigate --bench --mode geometry --n 200
   .venv/bin/python -m camera.navigate --bench --mode rendered --n 12 --save-frames
-Writes camera/out/nav_bench.md, nav_bench.csv and nav_bench.png.
+  .venv/bin/python -m camera.navigate --bench --mode rendered --noise 3 --tag noise3
+  .venv/bin/python -m camera.navigate --bench --mode rendered --sim-camera --tag simcam
+Writes camera/out/nav_bench.md, nav_bench.csv and nav_bench.png (with --tag X: nav_bench_X.*).
+--sim-camera: every screen frame is filmed by camera.fakecam.FakeCamera (keystone, defocus, LCD
+glow, vignetting, sensor noise, JPEG 85); the camera->screen homography is fitted once on the fake
+camera's view of the checkerboard and centroids are warped to screen pixels, as in
+camera.solve_live --sim-camera.
 """
 import argparse
 import csv
@@ -170,6 +176,8 @@ def identify(cand, body_pos, known=None, tol_arcsec=120.0, r_range_au=(R_MIN_AU,
     kn_names = list(known)
     kn_u = np.array([known[b] for b in known]).reshape(-1, 3)
     cand = np.asarray(cand, np.float64).reshape(-1, 3)
+    if len(cand) > 16:          # seeds grow as n^3; callers pass the brightest candidates first
+        cand = cand[:16]
     k = max(1, 3 - len(kn_u))                       # sightings each seed needs from candidates
     if len(cand) < k:
         return None
@@ -177,12 +185,22 @@ def identify(cand, body_pos, known=None, tol_arcsec=120.0, r_range_au=(R_MIN_AU,
     lo, hi = r_range_au[0] * pl.AU_KM, r_range_au[1] * pl.AU_KM
     tol = tol_arcsec * ARCSEC
 
+    # seed bodies: the real bodies plus each blend, the latter at the flux-weighted mean position
+    # (weights from H; exact enough for a seed, the survivors then model the photocentre properly)
+    Xs = [body_pos[b] for b in names]
+    for bl in blends:
+        q = bl.split("+")
+        w = flux([pl.BODIES[x][1] for x in q])
+        Xs.append(sum(wi * body_pos[x] for wi, x in zip(w, q)) / w.sum())
+    Xs = np.array(Xs)
     ci = np.array(list(itertools.combinations(range(len(cand)), k)), int).reshape(-1, k)
-    bi = np.array(list(itertools.permutations(range(len(names)), k)), int).reshape(-1, k)
+    bi = np.array([pm for pm in itertools.permutations(range(len(ext)), k)
+                   if sum(len(parts[j]) for j in pm) == len(set().union(*[parts[j] for j in pm]))],
+                  int).reshape(-1, k)
     S_c = np.repeat(ci, len(bi), 0)
     S_b = np.tile(bi, (len(ci), 1))
     U = np.concatenate([cand[S_c], np.broadcast_to(kn_u, (len(S_c),) + kn_u.shape)], 1)
-    X = np.concatenate([Xb[S_b], np.broadcast_to(kn_X, (len(S_b),) + kn_X.shape)], 1)
+    X = np.concatenate([Xs[S_b], np.broadcast_to(kn_X, (len(S_b),) + kn_X.shape)], 1)
     A = _proj(U)
     with np.errstate(all="ignore"):
         # tiny ridge so a degenerate seed (parallel lines) can't make the batched solve raise
@@ -335,6 +353,15 @@ class FrameSolver:
         self.a = a
         self.t3 = load_tetra3()
         self.sky = SkyRenderer(W, H, FOV)
+        self.cam = self.H = None
+        if a.sim_camera:
+            from camera.calibrate import fit
+            from camera.fakecam import FakeCamera
+            from sim.sky import checkerboard
+            self.cam = FakeCamera(W, H, seed=a.seed)
+            r = fit(self.cam.view(checkerboard(W, H)[0]), W, H)
+            self.H = r["H"]
+            print(f"[sim-camera] homography fitted on the fake checkerboard: RMS {r['rms']:.3f} screen px")
         _, _, self.cat = load_stars(6.5)   # everything that could leave a blob that isn't a planet
         self.cat_drawn = self.sky.vec      # stars the screen actually shows (attitude refinement)
 
@@ -347,14 +374,33 @@ class FrameSolver:
     def frame(self, att, extra, rng):
         from sim.sky import SkyRenderer
         img = self.sky.render(att, extra=extra)
-        return SkyRenderer.to_u8(img, noise=self.a.noise, rng=rng)
+        img = SkyRenderer.to_u8(img, noise=self.a.noise, rng=rng)
+        return img if self.cam is None else self.cam.view(img)
+
+    def blobs(self, gray, flux=False, **kw):
+        """Centroids in screen pixels (warped from camera pixels with --sim-camera), brightest first.
+        flux=True also returns a brightness per blob (background-subtracted 9x9 sum around it)."""
+        from camera.common import centroids, warp_points
+        cc = centroids(gray, **kw)
+        c = cc if self.H is None else warp_points(cc, self.H)
+        keep = (c[:, 0] > -0.5) & (c[:, 0] < W - 0.5) & (c[:, 1] > -0.5) & (c[:, 1] < H - 0.5)
+        if not flux:
+            return c[keep]
+        g = gray.astype(np.float32)
+        f = []
+        for x, y in np.rint(cc).astype(int):
+            patch = g[max(0, y - 4):y + 5, max(0, x - 4):x + 5]
+            ring = g[max(0, y - 8):y + 9, max(0, x - 8):x + 9]
+            f.append(float(patch.sum() - np.median(ring) * patch.size))
+        f = np.array(f)
+        o = np.argsort(-f[keep], kind="stable")
+        return c[keep][o], f[keep][o]
 
     def solve(self, gray):
         """Returns (attitude or None, info dict, candidate rays (M, 3), candidate pixels (M, 2))."""
-        from camera.common import centroids
         from sim.sky import from_radecroll
         a = self.a
-        c = centroids(gray, max_returned=a.max_centroids, max_area=a.max_area)   # as solve_live
+        c = self.blobs(gray, max_returned=a.max_centroids, max_area=a.max_area)   # as solve_live
         res = (self.t3.solve_from_centroids(c[:, ::-1], (H, W), fov_estimate=FOV,
                                             fov_max_error=a.fov_max_error, solve_timeout=a.timeout_ms,
                                             return_matches=True)
@@ -365,7 +411,7 @@ class FrameSolver:
         att = info["att_tetra3"] = from_radecroll(res["RA"], res["Dec"], res["Roll"])
         # candidate pass: planets brighter than mag ~1 render as blobs bigger than tetra3's 100 px
         # star-area cap, so look again with the cap lifted
-        c = centroids(gray, max_returned=a.max_blobs, max_area=a.cand_max_area)
+        c, fl = self.blobs(gray, flux=True, max_returned=a.max_blobs, max_area=a.cand_max_area)
         if a.refine:
             att, info["n_refine"] = refine_attitude(att, c, self.cat_drawn, self.sky)
         # drop blobs on any catalogue star; what is left is a planet candidate
@@ -374,7 +420,14 @@ class FrameSolver:
         sp = np.column_stack([px[on], py[on]])
         if len(c) and len(sp):
             d2 = ((c[:, None, :] - sp[None]) ** 2).sum(2).min(1)
-            c = c[d2 > a.star_reject_px ** 2]
+            c, fl = c[d2 > a.star_reject_px ** 2], fl[d2 > a.star_reject_px ** 2]
+        # centroids come brightest first; planets are among the brightest blobs, while noise,
+        # JPEG blocks and hot pixels leave many faint ones that would blow up the brute-force ID
+        # the screen border (LCD glow edge through the camera) shows up as a row of blobs; a planet
+        # there is also in the neighbouring scan frame (they overlap by 10 deg)
+        e = a.edge_px
+        m = (c[:, 0] > e) & (c[:, 0] < W - 1 - e) & (c[:, 1] > e) & (c[:, 1] < H - 1 - e)
+        c, info["flux"] = c[m][:a.max_cand], fl[m][:a.max_cand]
         return att, info, pixel_rays(c, W, H, FOV, att), c
 
 
@@ -404,17 +457,22 @@ def refine_attitude(att, c, cat, sky, match_px=3.0, n_iter=3):
     return att, n
 
 
-def merge_candidates(rays, tol_deg=0.05):
-    """Same object seen in two overlapping scan frames -> one candidate (mean direction)."""
-    groups = []
-    for r in rays:
-        for g in groups:
+def merge_candidates(rays, flux=None, tol_deg=0.05):
+    """Same object seen in two overlapping scan frames -> one candidate (mean direction).
+    Returned brightest first (by the brightest sighting) when flux is given."""
+    flux = np.zeros(len(rays)) if flux is None else np.asarray(flux)
+    groups, gf = [], []
+    for r, f in zip(rays, flux):
+        for k, g in enumerate(groups):
             if np.degrees(np.arccos(np.clip(g[0] @ r, -1, 1))) < tol_deg:
                 g.append(r)
+                gf[k] = max(gf[k], f)
                 break
         else:
             groups.append([r])
+            gf.append(f)
     out = np.array([np.mean(g, 0) for g in groups]).reshape(-1, 3)
+    out = out[np.argsort(-np.array(gf), kind="stable")] if len(out) else out
     return out / np.linalg.norm(out, axis=1, keepdims=True) if len(out) else out
 
 
@@ -456,13 +514,14 @@ def score_case(nav, P_true, cand_truth, sigma_arcsec):
 def run_bench(a):
     eph = pl.Ephemeris()
     jd = a.jd
-    rng = np.random.default_rng(a.seed)
+    rng = np.random.default_rng(a.seed)              # measurement noise, ID shuffles
+    pos_rng = np.random.default_rng([a.seed, 7])     # hidden positions: same for every mode / option
     modes = ["geometry", "rendered"] if a.mode == "both" else [a.mode]
     fs = FrameSolver(a) if "rendered" in modes else None
     rows = []
     t_start = time.time()
     for i in range(a.n):
-        P_true = random_observer(rng, eph, jd)
+        P_true = random_observer(pos_rng, eph, jd)
         app = eph.apparent(P_true, jd)
         sun_dir = -P_true / np.linalg.norm(P_true)   # light time to the Sun: < 1 km of solar motion
         scan = scan_attitudes(sun_dir)
@@ -484,7 +543,7 @@ def run_bench(a):
         if "rendered" in modes:
             ex = [b for b in pl.PLANETS if app[b]["mag"] <= VIS_MAG]
             extra = (np.array([app[b]["dir"] for b in ex]).reshape(-1, 3), np.array([app[b]["mag"] for b in ex]))
-            rays, n_frames, n_lock, att_err, att_err_t3 = [], 0, 0, [], []
+            rays, fluxes, n_frames, n_lock, att_err, att_err_t3 = [], [], 0, 0, [], []
             for k, (lon, att) in enumerate(scan):
                 if att.as_matrix()[:, 2] @ sun_dir > math.cos(math.radians(SUN_EXCL_DEG)):
                     continue
@@ -497,14 +556,19 @@ def run_bench(a):
                 att_err.append(math.degrees((att_est.inv() * att).magnitude()) * 3600)
                 att_err_t3.append(math.degrees((info["att_tetra3"].inv() * att).magnitude()) * 3600)
                 rays.append(r)
+                fluxes.append(info["flux"])
                 if a.save_frames and i < 3:
                     import cv2
                     OUT.mkdir(exist_ok=True)
                     vis_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                    if fs.H is not None:
+                        from camera.common import warp_points
+                        pix = warp_points(pix, np.linalg.inv(fs.H))
                     for x, y in pix:
                         cv2.circle(vis_img, (int(round(x)), int(round(y))), 14, (0, 200, 255), 2)
-                    cv2.imwrite(str(OUT / f"nav_frame_{i}_{k}.png"), vis_img)
-            cand = merge_candidates(np.concatenate(rays) if rays else np.zeros((0, 3)))
+                    cv2.imwrite(str(OUT / f"nav_frame{a.suffix}_{i}_{k}.png"), vis_img)
+            cand = merge_candidates(np.concatenate(rays) if rays else np.zeros((0, 3)),
+                                    np.concatenate(fluxes) if fluxes else None)
             lab = label_truth(cand, app, pl.PLANETS, P_true, fs.flux)
             # direction error of each real candidate vs its true (photocentre) direction
             tdir = {b: app[b]["dir"] for b in pl.PLANETS}
@@ -535,13 +599,13 @@ def run_bench(a):
 def summarize(rows, a, wall_s):
     OUT.mkdir(exist_ok=True)
     keys = sorted({k for r in rows for k in r})
-    with open(OUT / "nav_bench.csv", "w", newline="") as fh:
+    with open(OUT / f"nav_bench{a.suffix}.csv", "w", newline="") as fh:
         wr = csv.DictWriter(fh, fieldnames=keys)
         wr.writeheader()
         for r in rows:
             wr.writerow({k: r.get(k, "") for k in keys})
 
-    lines = [f"# Position from planets: offline benchmark ({a.n} positions, {wall_s / 60:.1f} min wall)", "",
+    lines = [f"# Position from planets: offline benchmark{f" [{a.tag}]" if a.tag else ""} ({a.n} positions, {wall_s / 60:.1f} min wall)", "",
              f"Epoch TDB JD {a.jd}. Hidden observer: 0.7-2 AU from the Sun, ecliptic latitude +/-3 deg, "
              f"more than {MIN_BODY_GAP_AU} AU from any planet. Bodies: Mercury, Venus, Earth, Moon, Mars, "
              f"Jupiter and Saturn barycentres (DE421), visible if mag <= {VIS_MAG} and inside one of "
@@ -550,7 +614,7 @@ def summarize(rows, a, wall_s):
              f"- **geometry**: exact light-time-corrected directions + Gaussian noise sigma = {a.sigma:g} arcsec "
              "per axis, shuffled, then identified and solved (checks the maths without the renderer).",
              "- **rendered**: each scan frame is rendered by sim.sky with the planets as extra blobs "
-             f"(noise {a.noise:g} DN), solved by tetra3 (same centroider/solver settings as solve_live), "
+             f"(noise {a.noise:g} DN{', filmed by camera.fakecam with the fitted homography' if a.sim_camera else ''}), solved by tetra3 (same centroider/solver settings as solve_live), "
              f"blobs more than {a.star_reject_px:g} px from every catalogue star (mag <= 6.5) are planet "
              "candidates, merged across overlapping frames, identified and solved.",
              f"- **+Sun**: a Sun direction (sun sensor, sigma {a.sun_sigma:g} arcsec) is added as a known body at "
@@ -606,10 +670,10 @@ def summarize(rows, a, wall_s):
                          f"{r['resid_rms']:.0f} | {'yes' if r['id_all_ok'] else 'NO'} |")
         else:
             lines.append(f"| {r['case']} | {r['r_au']:.2f} | {r['visible']} | - | no fix | | | | |")
-    (OUT / "nav_bench.md").write_text("\n".join(lines) + "\n")
+    (OUT / f"nav_bench{a.suffix}.md").write_text("\n".join(lines) + "\n")
     plot(summary, a)
     print("\n".join(lines[:lines.index(hdr) + 2 + len(groups)]))
-    print(f"\nwrote {OUT / 'nav_bench.md'}, nav_bench.csv, nav_bench.png")
+    print(f"\nwrote {OUT / f'nav_bench{a.suffix}.md'}, .csv, .png")
 
 
 def plot(summary, a):
@@ -647,7 +711,7 @@ def plot(summary, a):
     ax2.legend(fontsize=8, loc="upper left")
     ax2.grid(alpha=0.3, which="both")
     fig.tight_layout()
-    fig.savefig(OUT / "nav_bench.png", dpi=130)
+    fig.savefig(OUT / f"nav_bench{a.suffix}.png", dpi=130)
 
 
 def main():
@@ -676,7 +740,12 @@ def main():
     ap.add_argument("--no-refine", dest="refine", action="store_false",
                     help="rendered: use tetra3's attitude as is (no least-squares refit on all stars)")
     ap.add_argument("--save-frames", action="store_true", help="rendered: save annotated frames of the first 3 scans")
+    ap.add_argument("--max-cand", type=int, default=8, help="rendered: brightest planet candidates kept per frame")
+    ap.add_argument("--edge-px", type=float, default=10.0, help="rendered: ignore candidates this close to the screen edge")
+    ap.add_argument("--sim-camera", action="store_true", help="rendered: film each frame with camera.fakecam")
+    ap.add_argument("--tag", default="", help="output name suffix: camera/out/nav_bench_<tag>.*")
     a = ap.parse_args()
+    a.suffix = f"_{a.tag}" if a.tag else ""
     if not a.bench:
         ap.print_help()
         return
