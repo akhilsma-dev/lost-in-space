@@ -3,7 +3,7 @@
 #
 #   demo/fake_demo.sh            keyboard plays the console (f = flare, 0-1023 = tumble knob, q = quit)
 #   demo/fake_demo.sh --board    real Arduino console on USB instead of the keyboard
-#   demo/fake_demo.sh --tuned    classical solver keeps motion-blur streaks (holds lock while tumbling)
+#   demo/fake_demo.sh --classic  plain tetra3 blob filter (loses lock near 5 deg/s; default keeps blur streaks)
 #   demo/fake_demo.sh --full     sim full screen (default: window)
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
 #
@@ -17,11 +17,12 @@ if [[ -z "$PY" ]]; then
   if [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python; fi
 fi
 
-BOARD=0 TUNED=0 FULL=0 OPEN=0
+BOARD=0 TUNED=1 FULL=0 OPEN=0
 for arg in "$@"; do
   case "$arg" in
     --board) BOARD=1 ;;
     --tuned) TUNED=1 ;;
+    --classic) TUNED=0 ;;
     --full)  FULL=1 ;;
     --open)  OPEN=1 ;;
     -h|--help) sed -n '2,11p' "$0"; exit 0 ;;

@@ -6,7 +6,7 @@ Files: `firmware/console/console.ino` (board), `bridge/serial_bridge.py` (laptop
 ## 0. Whole demo, one command (no camera, no board)
 
 ```bash
-demo/fake_demo.sh            # add --tuned to hold lock while tumbling, --board for the real console
+demo/fake_demo.sh            # --board for the real console, --classic for plain tetra3 (loses lock when tumbling)
 ```
 
 Starts `sim.live`, the dashboard (http://localhost:8080), `camera.solve_live --follow-sim` (estimates on
