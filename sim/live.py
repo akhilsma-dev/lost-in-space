@@ -34,6 +34,11 @@ dashboard can redraw the screen). Extra commands (UDP and keys):
   slew <ra> <dec> [roll] [deg/s]   turn there smoothly at that rate (default --slew-rate), then hold
                             (tumble stops; a 'rate', 'point' or flare cancels it). Truth "omega" is the
                             slew's body rate while turning, "slewing" true; "rate_dps" stays the tumble.
+Voice / typed commands (voice/commands.py via voice.server) also send:
+  axis <x> <y> <z> | axis random   tumble axis in camera axes (x right = pitch, y down = yaw, z boresight = roll)
+  rate_add <deg/s>                 change the tumble rate by this much ("faster", "slow down by five")
+  boost <gain>                     star brightness gain (1 = normal)
+  mag <limit>                      faintest star drawn (2..MAG_LIMIT; fewer stars = harder to solve)
 --flare-moves: a flare also picks a new hidden position (so the navigator has to find it again).
 """
 import argparse
@@ -61,6 +66,7 @@ class Sim:
         self.rate_dps = args.rate
         self.slew, self.omega_now = None, np.zeros(3)   # slew: (target attitude, rad/s) while turning
         self.glare = False
+        self.boost = 1.0       # star brightness gain ('boost')
         self.calib = False
         self.paused = False
         self.frame = 0
@@ -127,6 +133,27 @@ class Sim:
         self.rate_dps = float(np.clip(dps, 0, 60))
         print(f"[rate] {self.rate_dps:.1f} deg/s")
 
+    def set_axis(self, v):
+        """New tumble axis, body frame (camera axes); the wobble restarts around it."""
+        self.slew = None
+        v = np.asarray(v, float)
+        self.axis = v / np.linalg.norm(v)
+        self.new_wobble_axis()
+        print(f"[axis] tumble axis {np.round(self.axis, 3).tolist()} (camera x right, y down, z boresight)")
+
+    def set_mag(self, m):
+        from sim.sky import MAG_LIMIT, load_stars
+        m = float(np.clip(m, 2.0, MAG_LIMIT))
+        sky = self.sky
+        sky.hip, sky.mag, sky.vec = load_stars(m)
+        sky.mag_limit = m
+        sky.peak, sky.bin = sky.blob_style(sky.mag)
+        if self.eph is not None:
+            from sim import planets as pl
+            self.planets = pl.sky_list(self.eph.apparent(self.pos, self.jd), m)
+            self.extra = pl.extra_from_list(self.planets)
+        print(f"[mag] stars down to magnitude {m:g} ({len(sky.mag)} stars)")
+
     def command(self, line):
         parts = line.strip().lower().split()
         if not parts:
@@ -154,6 +181,22 @@ class Sim:
                 self.start_slew(*v[:3], *(v[3:4] or [None]))
             except ValueError:
                 print(f"[udp] bad slew command: {line!r}")
+        elif cmd == "rate_add" and arg is not None:
+            self.set_rate(self.rate_dps + float(arg))
+        elif cmd == "axis" and arg == "random":
+            self.set_axis(self.rng.normal(size=3))
+        elif cmd == "axis" and len(parts) >= 4:
+            try:
+                v = [float(x) for x in parts[1:4]]
+                if np.linalg.norm(v) > 0:
+                    self.set_axis(v)
+            except ValueError:
+                print(f"[udp] bad axis command: {line!r}")
+        elif cmd == "boost" and arg is not None:
+            self.boost = float(np.clip(float(arg), 0.1, 10.0))
+            print(f"[boost] star brightness x{self.boost:g}")
+        elif cmd == "mag" and arg is not None:
+            self.set_mag(float(arg))
         elif cmd == "pos" and self.eph is not None:
             self.new_position()
         else:
@@ -186,6 +229,8 @@ class Sim:
         if self.calib:
             return self.calib_img
         img = self.sky.render(self.att, omega if not self.paused else None, self.a.exposure, extra=self.extra)
+        if self.boost != 1.0:
+            img *= self.boost
         if self.glare:
             self.sky.glare(img, corner=self.glare_corner)
         if self.flash > 0:

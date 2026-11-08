@@ -12,6 +12,8 @@
 #   demo/fake_demo.sh --webcam   start with the solver seeing the sim through the synthetic webcam (like the real box);
 #                                either way the CLEAN / WEBCAM switch on the dashboard's camera view flips it live
 #   demo/fake_demo.sh --open     also open the dashboard in Chrome kiosk mode
+#   demo/fake_demo.sh --no-voice-cmd   do not start voice.server (talk / type commands on the dashboard; started by
+#                                default: typed commands always work, speech needs ELEVENLABS_API_KEY + pip install elevenlabs sounddevice)
 #   demo/fake_demo.sh --nav      position from planets: hidden position + planets on screen; WHERE AM I? on the
 #                                virtual console slews through 8 ecliptic pointings (20 deg/s, 2 s look each; paused while spinning) and
 #                                fixes the position (dashboard POSITION panel); with --board it scans continuously;
@@ -27,7 +29,7 @@ if [[ -z "$PY" ]]; then
   if [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python; fi
 fi
 
-BOARD=0 TUNED=1 STARNET=0 FULL=0 OPEN=0 WEB=1 NAV=0 MODELS=0 WEBCAM=0
+BOARD=0 TUNED=1 STARNET=0 FULL=0 OPEN=0 WEB=1 NAV=0 MODELS=0 WEBCAM=0 VOICECMD=1
 for arg in "$@"; do
   case "$arg" in
     --board) BOARD=1 ;;
@@ -37,6 +39,7 @@ for arg in "$@"; do
     --full)  FULL=1 ;;
     --open)  OPEN=1 ;;
     --no-web) WEB=0 ;;
+    --no-voice-cmd) VOICECMD=0 ;;
     --nav)   NAV=1 ;;
     --models) MODELS=1 ;;
     --webcam) WEBCAM=1 ;;
@@ -60,7 +63,7 @@ trap cleanup EXIT INT TERM
 # Free the ports in case an earlier run is still alive.
 # Match only "<python> -u -m <our module>" so editors / shells mentioning these names are left alone.
 # ("Python" is capitalised for macOS framework builds.)
-pkill -f -- "[Pp]ython[0-9.]* -u -m (sim\.live|camera\.solve_live|dashboard|bridge\.serial_bridge)( |$)" 2>/dev/null || true
+pkill -f -- "[Pp]ython[0-9.]* -u -m (sim\.live|camera\.solve_live|dashboard|bridge\.serial_bridge|voice\.server)( |$)" 2>/dev/null || true
 sleep 0.5
 
 SIM_ARGS=(); [[ $FULL == 0 ]] && SIM_ARGS+=(--window)
@@ -107,6 +110,12 @@ for i in $(seq 1 120); do
   [[ $i == 120 ]] && { echo "[demo] solver gave no answer in 60 s; see $LOG_DIR/solve.log"; exit 1; }
   sleep 0.5
 done
+
+# voice commands (dashboard voice panel -> voice.server -> sim / solver); not required, so started after the check
+if [[ $VOICECMD == 1 ]]; then
+  "$PY" -u -m voice.server > "$LOG_DIR/voice.log" 2>&1 &
+  PIDS+=($!)
+fi
 
 echo "[demo] sim, dashboard, solver running  (solver: $SOLVER_NAME)"
 echo "[demo] dashboard: http://localhost:8080    logs: $LOG_DIR"

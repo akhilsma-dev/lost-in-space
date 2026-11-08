@@ -10,6 +10,9 @@ Examples
   "stop tumbling"                                          -> rate 0
   "solar flare" | "glare on" | "calibration off" | "pause" | "resume"
   "set boost to two" | "magnitude four point five"
+  "where am I"  -> whereami          "use StarNet" / "switch to tuned tetra" -> detector starnet|tuned|classic
+  "look through the webcam" / "clean camera" -> camera webcam|clean
+  (whereami / detector / camera go to the solver, camera.solve_live's UDP 5011, not the sim)
 
 Axes are in camera coordinates (the sim's convention): x = image right (pitch),
 y = image down (yaw), z = boresight (roll).
@@ -132,6 +135,26 @@ def parse(text):
     if m:
         cmds.append(f"mag {float(m.group(1)):g}")
         said.append(f"Showing stars down to magnitude {float(m.group(1)):g}")
+
+    # ---- solver commands (voice.server sends these to the solver's port, not the sim's) ----
+    if re.search(r"\bwhere am i\b|\bwhere are we\b|\b(find|get|fix)\w* (our |my |the )?(position|location)\b", t):
+        cmds.append("whereami")
+        said.append("Looking for the planets to find our position")
+    if re.search(r"\b(star ?net|neural|cnn|network|ai)\b", t) and re.search(r"\b(use|switch|star finder|detector|turn on|enable)\w*\b", t):
+        cmds.append("detector starnet")
+        said.append("Star finder: StarNet")
+    elif re.search(r"\btuned\b", t) and re.search(r"\b(tetra\w*|star finder|detector|use|switch)\w*\b", t):
+        cmds.append("detector tuned")
+        said.append("Star finder: tuned tetra3")
+    elif re.search(r"\b(classic\w*|tetra\w*)\b", t) and re.search(r"\b(use|switch|star finder|detector)\w*\b", t):
+        cmds.append("detector classic")
+        said.append("Star finder: classic tetra3")
+    if re.search(r"\bweb ?cam\w*\b", t) and not re.search(r"\b(off|disable)\b", t):
+        cmds.append("camera webcam")
+        said.append("Solver looking through the webcam")
+    elif re.search(r"\b(clean (camera|feed|view|image)|webcam off|camera clean)\b", t):
+        cmds.append("camera clean")
+        said.append("Solver looking at the clean feed")
 
     if not cmds:
         return Parsed([], "Sorry, I didn't understand that command.")

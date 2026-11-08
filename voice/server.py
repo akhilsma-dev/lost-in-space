@@ -28,7 +28,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from voice import listen
 from voice.commands import parse
 
-CFG = {"port": 5006, "dry": False}
+CFG = {"port": 5006, "solver_port": 5011, "dry": False}
+SOLVER_CMDS = ("whereami", "detector", "camera")   # camera.solve_live's command port, not the sim's
 _client = None
 _mic_lock = threading.Lock()
 MAX_BODY = 12 * 1024 * 1024
@@ -66,7 +67,8 @@ def execute(text):
     if p.commands and not CFG["dry"]:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         for c in p.commands:
-            sock.sendto(c.encode(), ("127.0.0.1", CFG["port"]))
+            port = CFG["solver_port"] if c.split()[0] in SOLVER_CMDS else CFG["port"]
+            sock.sendto(c.encode(), ("127.0.0.1", port))
         sock.close()
         sent = True
     print(f'[voice] "{text}" -> {p.commands or "nothing"}' + ("  (dry run)" if CFG["dry"] else ""))
@@ -144,9 +146,11 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="use 0.0.0.0 to reach it from other devices")
     ap.add_argument("--port", type=int, default=5010)
     ap.add_argument("--sim-port", type=int, default=5006, help="the sim's UDP command port")
+    ap.add_argument("--solver-port", type=int, default=5011,
+                    help="camera.solve_live's UDP command port (where am I?, star finder, camera)")
     ap.add_argument("--dry-run", action="store_true", help="parse only, do not send to the sim")
     args = ap.parse_args()
-    CFG["port"], CFG["dry"] = args.sim_port, args.dry_run
+    CFG["port"], CFG["solver_port"], CFG["dry"] = args.sim_port, args.solver_port, args.dry_run
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"voice helper on http://{args.host}:{args.port}  ->  sim UDP 127.0.0.1:{args.sim_port}"
           + ("  (dry run)" if args.dry_run else ""))

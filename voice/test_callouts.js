@@ -8,7 +8,9 @@ function run(name, steps, expect) {
   const ctx = {
     performance: { now: () => T },
     localStorage: { getItem: () => null, setItem() {} },
-    document: { getElementById: () => null, addEventListener() {} },
+    window: {},                                         // the voice-command panel (VOICE_API) reads these
+    location: { protocol: "http:", hostname: "localhost" },
+    document: { getElementById: () => null, addEventListener() {}, readyState: "loading" },   // panel build deferred
     fetch: () => ({ then: () => ({ then: () => ({ catch() {} }) }) }),   // manifest loaded by hand below
     Audio: class {
       constructor(src) { this.src = src; this.ls = {}; }
