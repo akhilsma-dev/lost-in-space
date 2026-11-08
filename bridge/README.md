@@ -10,7 +10,21 @@ demo/fake_demo.sh            # --board for the real console, --classic for plain
 ```
 
 Starts `sim.live`, the dashboard (http://localhost:8080), `camera.solve_live --follow-sim` (estimates on
-5008 + 5007) and this bridge with the keyboard as the console. The real solver drives STATUS / ATT / SERVO.
+5008 + 5007) and this bridge with the **virtual console** (and the keyboard) as the board. The real solver
+drives STATUS / ATT / SERVO. `--no-web` = keyboard only.
+
+### Virtual console (board is down)
+
+`python -m bridge.serial_bridge --fake --web` serves the console as a web page on http://localhost:8081
+(`bridge/webconsole.py`, `bridge/static/console.html`). The bridge talks to it with the same serial lines
+as the real board, and the page copies the firmware's behaviour: OLED layout (LOCK / SEARCH / LOST /
+NO LINK / FLARE!, RA/Dec/Roll, tumble), the lock LED, the buzzer chirp and alarm (WebAudio; the first
+click switches sound on, the speaker icon mutes), the servo slew limit of 60 °/s and the 3 s NO LINK
+timeout. Controls: drag the knob up/down (also mouse wheel or arrow keys; double-click = 0), click FLARE
+or press Space.
+
+The dashboard shows it in a panel when started with `--console-url http://localhost:8081/` (`fake_demo.sh`
+does this). `--web-host 0.0.0.0` makes the page reachable from a phone on the same network.
 
 ## 1. Without hardware (fake board)
 
