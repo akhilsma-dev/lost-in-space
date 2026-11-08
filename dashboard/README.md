@@ -28,7 +28,7 @@ From the repo root:
 
 `--open` launches Chrome in kiosk mode (full screen, no browser chrome). Quit it with ⌘Q. If you
 open the page any other way, press **F** for full screen. Other flags: `--port`, `--truth-port`,
-`--est-port`, `--seed`, and `--solve-rate FILE`.
+`--est-port`, `--frame-port`, `--seed`, and `--solve-rate FILE`.
 
 To push mock packets through the real UDP path (the dashboard runs with no `--mock` flag):
 
@@ -41,7 +41,7 @@ To push mock packets through the real UDP path (the dashboard runs with no `--mo
 
 | Panel | Source |
 |---|---|
-| **Camera view** | The star field the box screen is showing, re-rendered from truth with `sim.sky` (motion blur from consecutive truth packets, glare when it's on). Drawn on top: yellow = detected centroids from the estimate packet; green rings = catalogue stars that land on a centroid when projected with the **estimated** attitude; star names from `data/starnames.json`; blue constellation lines from `data/constellations.lines.json`, also projected with the **estimated** attitude. If the lines sit on the stars, the solve is right. |
+| **Camera view** | The frame `camera.solve_live` actually solved (UDP 5010: a ~640 px JPEG, contrast-stretched for display only, at most 10 per second). Drawn on top: yellow = the solver's detected centroids; green rings = catalogue stars that land on a centroid when projected with the **estimated** attitude from that same frame; star names from `data/starnames.json`; blue constellation lines from `data/constellations.lines.json`. Overlays are worked out in screen pixels and mapped onto the camera image through the calibration homography. If the lines sit on the stars, the solve is right. **Inset, top right: REAL SKY**, the star field on the box screen re-rendered from the hidden truth with `sim.sky` (motion blur from consecutive truth packets, glare in the corner sim.live picked). With no camera frames (`--mock`, or an older solver) the panel falls back to **SKY VIEW**: the truth re-render with the overlay, as before. |
 | **Lock badge** | `LOCK` = latest estimate is LOCK. `LOST` = no lock for under 3 s. `SEARCH` = no lock for 3 s or more. `NO SIGNAL` = no estimate packets for 2 s. `CALIBRATING` = sim is showing the checkerboard. Also shows confidence, matches, false-match probability, RMSE, solve time and blob count. |
 | **Attitude** | Truth vs estimate RA/Dec/Roll. The Δ row is on-sky arcsec. Full-attitude error is the angle of `R_trueᵀ·R_est`, so it includes roll. Pointing is the boresight angle; roll is the roll difference. |
 | **Tumble / glare / mode** | From the truth feed. |
@@ -74,7 +74,7 @@ The screenshots are in `screenshots/`, all taken at 1920×1080 with headless Chr
 - `8_real_solve_live_sim.png`: `dashboard` + the real `camera.solve_live --sim`, run from its own
   worktree, unmerged. Real tetra3 at 6″ full-attitude error, which checks the 5008 packet format
 
-Not tested: a real webcam. The camera view is always the sim re-render, not the webcam image,
-because solve_live owns the camera. Also not tested: the `--open` kiosk launch on the demo laptop.
-The glare corner in the re-render is fixed to the bottom right, because the truth packet doesn't
-say which corner sim.live picked.
+Camera panel (UDP 5010) checked in the browser with `demo/fake_demo.sh` (lock, 6 °/s tumble + glare,
+flare whiteout and re-lock), with `camera.solve_live --sim --sim-camera` (keystoned noisy frame, overlay
+mapped through the homography), and with `--mock` (falls back to SKY VIEW). Not tested: a real webcam,
+and the `--open` kiosk launch on the demo laptop.

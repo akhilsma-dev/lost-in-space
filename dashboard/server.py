@@ -1,6 +1,7 @@
 """Lost in Space mission-control dashboard.
 
-Listens for truth (UDP 5005, sim.live) and estimates (UDP 5008, camera.solve_live), works out
+Listens for truth (UDP 5005, sim.live), estimates (UDP 5008, camera.solve_live) and the solved camera
+frames (UDP 5010, camera.solve_live), works out
 errors / lock state / overlays, and serves a full-screen browser page on http://localhost:8080.
 
   .venv/bin/python -m dashboard                 real feeds
@@ -27,7 +28,7 @@ import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 
-from dashboard.feeds import Feed, MockRunner, UdpFeed
+from dashboard.feeds import Feed, MockRunner, UdpFeed, UdpFrameFeed
 from sim.sky import DATA, SkyRenderer, checkerboard, from_radecroll, load_stars, unit
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -154,7 +155,7 @@ class FrameRenderer(threading.Thread):
             sk = self.hub.sky.renderer(vw, vh, fov)
             img = sk.render(att, omega, float(truth.get("exposure", 0.1)) if omega is not None else 0.0)
             if truth.get("glare"):
-                sk.glare(img, corner=(1.0, 1.0))
+                sk.glare(img, corner=tuple(truth.get("glare_corner") or (1.0, 1.0)))
             if truth.get("flash"):
                 img += float(truth["flash"])   # flare whiteout, as on the sim screen
             img = SkyRenderer.to_u8(img)
@@ -165,9 +166,11 @@ class FrameRenderer(threading.Thread):
 
 # ---------------------------------------------------------------- state hub
 class Hub(threading.Thread):
-    def __init__(self, truth, est, solve_rate_path, mode_label):
+    def __init__(self, truth, est, solve_rate_path, mode_label, cam=None):
         super().__init__(daemon=True, name="hub")
         self.truth, self.est = truth, est
+        self.cam = cam or Feed("frames")   # real camera frames; empty feed = fall back to the truth render
+        self._cam_cache = (-1, None)        # (cam.count, computed view) cache
         self.solve_rate_path = pathlib.Path(solve_rate_path)
         self.mode_label = mode_label
         self.sky = SkyData()
@@ -203,6 +206,43 @@ class Hub(threading.Thread):
                     self.snapshot, self.seq = snap, self.seq + 1
                     self.cond.notify_all()
             time.sleep(max(0.005, 1 / 15 - (time.time() - t0)))
+
+    def cam_frame(self):
+        """Latest solved camera frame (header dict incl. "jpeg") if fresh, else None."""
+        return self.cam.last if self.cam.age() < SIGNAL_TIMEOUT else None
+
+    def _cam_view(self):
+        """The camera panel: centroids and the overlay from the estimate solved on THIS frame, mapped from
+        screen px into the JPEG's px (screen -> camera homography, then the downscale)."""
+        f = self.cam_frame()
+        if f is None:
+            return None
+        if self._cam_cache[0] == self.cam.count:
+            return self._cam_cache[1]
+        e = f.get("est") or {}
+        s = float(f.get("scale", 1.0))
+        Hs = f.get("screen_to_cam")
+        Hs = None if Hs is None else np.asarray(Hs, float)
+
+        def m(pts):
+            p = np.asarray(pts, float).reshape(-1, 2)
+            if len(p) and Hs is not None:
+                p = cv2.perspectiveTransform(p.reshape(-1, 1, 2), Hs).reshape(-1, 2)
+            return np.round(p * s, 1)
+
+        overlay = None
+        if e.get("status") == "LOCK" and e.get("ra") is not None:
+            o = self.sky.overlay(att_from(e), f["sw"], f["sh"], e.get("fov") or 50.0, e.get("centroids") or [])
+            ln = np.asarray(o["lines"], float).reshape(-1, 4)
+            overlay = {"lines": np.hstack([m(ln[:, :2]), m(ln[:, 2:])]).tolist(),
+                       "cons": [[*m([c[:2]])[0].tolist(), c[2]] for c in o["cons"]],
+                       "ident": m(o["ident"]).tolist(),
+                       "labels": [[*m([lb[:2]])[0].tolist(), lb[2]] for lb in o["labels"]],
+                       "bore": m([[f["sw"] / 2, f["sh"] / 2]])[0].tolist()}
+        view = {"w": f["w"], "h": f["h"], "frame_id": self.cam.count, "cents": f.get("cam_cents") or [],
+                "overlay": overlay, "status": e.get("status"), "calibrated": Hs is not None}
+        self._cam_cache = (self.cam.count, view)
+        return view
 
     def _err(self, est, truth):
         ea, ta = att_from(est), att_from(truth)
@@ -286,6 +326,7 @@ class Hub(threading.Thread):
                                                   "prob", "rmse", "solve_ms", "n_centroids", "frontend")},
             "state": state, "since_lock": None if not self.ever_lock else now - self.last_lock,
             "err": err,
+            "cam": self._cam_view(),
             "view": {"w": w, "h": h, "frame_id": self.frames.id, "has_frame": self.frames.jpeg is not None
                      and self.frame_truth() is not None,
                      "cents": cents[:100], "overlay": overlay},
@@ -339,6 +380,9 @@ def make_handler(hub, config):
                     return self._send(200, hub.snapshot.encode(), "application/json")
             if path == "/config":
                 return self._send(200, json.dumps(config).encode(), "application/json")
+            if path == "/cam.jpg":
+                f = hub.cam.last
+                return self._send(200, f["jpeg"], "image/jpeg") if f else self._send(404, b"", "text/plain")
             if path == "/frame.jpg":
                 j = hub.frames.jpeg
                 return self._send(200, j, "image/jpeg") if j else self._send(404, b"", "text/plain")
@@ -395,6 +439,7 @@ def main():
     ap.add_argument("--port", type=int, default=8080, help="HTTP port for the page")
     ap.add_argument("--truth-port", type=int, default=5005)
     ap.add_argument("--est-port", type=int, default=5008)
+    ap.add_argument("--frame-port", type=int, default=5010, help="solved camera frames from camera.solve_live")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--mock", action="store_true", help="synthesise truth and estimates (no UDP)")
     g.add_argument("--mock-est", action="store_true", help="real truth on UDP, synthesised estimates")
@@ -407,6 +452,7 @@ def main():
                          "e.g. http://localhost:8081/")
     a = ap.parse_args()
 
+    cam = None
     if a.mock:
         truth, est = Feed("truth"), Feed("est")
         MockRunner(est, own_truth=truth, seed=a.seed).start()
@@ -421,9 +467,11 @@ def main():
         else:
             est = UdpFeed("est", a.est_port)
             est.start()
+            cam = UdpFrameFeed(a.frame_port)
+            cam.start()
             label = "LIVE"
 
-    hub = Hub(truth, est, a.solve_rate, label)
+    hub = Hub(truth, est, a.solve_rate, label, cam)
     hub.start()
     srv = Server(("127.0.0.1", a.port), make_handler(hub, {"console_url": a.console_url}))
     url = f"http://localhost:{a.port}/"

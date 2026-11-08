@@ -8,6 +8,7 @@ Estimate (camera.solve_live, UDP 5008):
 import json
 import math
 import socket
+import struct
 import threading
 import time
 
@@ -76,6 +77,45 @@ class UdpFeed(Feed):
             try:
                 self.inject(json.loads(data.decode(errors="ignore")))
             except ValueError:
+                pass
+
+
+class UdpFrameFeed(Feed):
+    """Solved camera frames from camera.solve_live (UDP 5010): 4-byte header length, JSON header, JPEG.
+    .last is the header dict with the JPEG bytes under "jpeg"."""
+
+    def __init__(self, port):
+        super().__init__("frames")
+        self.port = port
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True, name="udp-frames").start()
+
+    def _run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 21)
+        try:
+            sock.bind(("127.0.0.1", self.port))
+        except OSError as e:
+            self.error = f"UDP {self.port}: {e.strerror or e}"
+            print(f"[frames] cannot listen: {self.error}")
+            return
+        sock.settimeout(0.5)
+        while True:
+            try:
+                data, _ = sock.recvfrom(1 << 16)
+            except socket.timeout:
+                continue
+            except OSError:
+                time.sleep(0.2)
+                continue
+            try:
+                (n,) = struct.unpack(">I", data[:4])
+                hdr = json.loads(data[4:4 + n].decode())
+                hdr["jpeg"] = data[4 + n:]
+                if hdr["jpeg"][:2] == b"\xff\xd8":
+                    self.inject(hdr)
+            except (ValueError, struct.error, KeyError):
                 pass
 
 
