@@ -19,6 +19,7 @@ python -m voice.generate               # ElevenLabs, about 30 short clips
   says "placeholder" while they're in use. The committed clips are ElevenLabs ("Adam").
 - Unchanged clips are skipped; `--force` redoes them, `--only flare,lost` redoes just those.
 - `--list` prints every callout. The text lives in `voice/lines.py`.
+- `node voice/test_callouts.js` replays lock / flare scenarios through `voice.js` and checks what it says.
 
 ## When it speaks (`dashboard/static/voice.js`)
 

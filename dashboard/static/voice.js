@@ -6,7 +6,8 @@
 const Voice = (() => {
   const RATE_BUCKETS = [0, 5, 10, 15, 20], ACC_BUCKETS = [5, 10, 20, 30, 60];
   const PRIO = { flare: 3, no_signal: 3, unstable: 2, lost: 2, signal_back: 2, online: 2 };   // default 1
-  const STALE_MS = 4000;            // drop queued callouts older than this
+  const STALE_MS = 4000;            // drop queued callouts older than this...
+  const STALE_RELOCK_MS = 10000;    // ...except "lock reacquired", which is the point of a flare
   const RATE_SETTLE_MS = 1200;      // knob must rest this long before the rate is read out
   const FLARE_QUIET_MS = 4000;      // after a flare, "lost" is implied: don't say it
   const HOLD_MS = { LOCK: 700, LOST: 1000 };   // a new state must last this long to be announced
@@ -19,6 +20,7 @@ const Voice = (() => {
   let queue = [], playing = null;
   const history = [];                    // [time s, id] of every line played (debugging / tests)
   const v = { init: false, state: null, everLock: false, outageAt: null, flareAt: -1e9, prevFlash: 0,
+              relockFrom: null, sawUnlock: false,   // flare -> next lock: always announced
               flaps: [], muteLockUntil: 0, lastUnstable: -1e9, cand: null, candAt: 0, lastSearch: -1e9, accDue: null, lastAcc: -1e9,
               rateBucket: null, rateSeen: null, rateAt: 0, glare: null };
 
@@ -35,7 +37,7 @@ const Voice = (() => {
   }
   function say(id) {
     if (!clips || !clips[id] || !enabled) return;
-    const now = performance.now(), prio = PRIO[id] || 1;
+    const now = performance.now(), prio = PRIO[id] || (isRelock(id) ? 2 : 1);
     queue = queue.filter((q) => q.id !== id);
     if (playing && prio > playing.prio && playing.prio < 3) {   // urgent: cut the current line short
       playing.el.pause(); playing = null;
@@ -45,10 +47,11 @@ const Voice = (() => {
     if (queue.length > 3) queue.length = 3;
     pump();
   }
+  const isRelock = (id) => id.startsWith("relock_") || id === "lock_again";
   function pump() {
     if (playing || blocked) return;
     const now = performance.now();
-    queue = queue.filter((q) => now - q.t < STALE_MS);
+    queue = queue.filter((q) => now - q.t < (isRelock(q.id) ? STALE_RELOCK_MS : STALE_MS));
     const next = queue.shift();
     if (!next) return;
     const el = audio[next.id];
@@ -100,7 +103,9 @@ const Voice = (() => {
 
     // solar flare: the sensor whiteout starts
     const flash = tr ? tr.flash || 0 : 0;
-    if (flash > 0 && v.prevFlash === 0) { v.flareAt = now; v.flaps = []; say("flare"); }
+    if (flash > 0 && v.prevFlash === 0) {
+      v.flareAt = now; v.flaps = []; v.relockFrom = now; v.sawUnlock = st !== "LOCK"; say("flare");
+    }
     v.prevFlash = flash;
 
     // lock state changes, debounced: a state counts once it has held for HOLD_MS, so one-frame
@@ -119,7 +124,7 @@ const Voice = (() => {
       }
       const muted = now < v.muteLockUntil;
       if (v.state === "LOCK") {
-        if (!muted) {
+        if (!muted && v.relockFrom == null) {   // after a flare, the block below announces it
           const dt = v.outageAt == null ? null : (at - v.outageAt) / 1000;
           if (!v.everLock) say("lock_first");
           else if (dt != null && dt <= 10.5) say("relock_" + Math.max(1, Math.round(dt)));
@@ -133,6 +138,18 @@ const Voice = (() => {
         else if (v.state === "SEARCH" && now - v.lastSearch > SEARCH_COOLDOWN_MS && now - v.flareAt > FLARE_QUIET_MS) { say("search"); v.lastSearch = now; }
         else if (v.state === "NO SIGNAL") say("no_signal");
       }
+    }
+
+    // after a flare: announce the next solid lock, timed from the flare, even if the outage was
+    // shorter than the LOST debounce or lock lines are muted
+    if (v.relockFrom != null) {
+      if (st !== "LOCK") v.sawUnlock = true;
+      else if (v.sawUnlock && v.cand === "LOCK" && now - v.candAt >= HOLD_MS.LOCK) {
+        const dt = (v.candAt - v.relockFrom) / 1000;
+        say(dt <= 10.5 ? "relock_" + Math.max(1, Math.round(dt)) : "lock_again");
+        v.relockFrom = null; v.everLock = true; v.outageAt = null; v.accDue = now + ACC_DELAY_MS;
+      }
+      if (v.relockFrom != null && now - v.relockFrom > 30000) v.relockFrom = null;   // never re-locked
     }
 
     // how good the lock is, once it has settled
@@ -157,17 +174,20 @@ const Voice = (() => {
   function load() {
     fetch(base + "manifest.json").then((r) => (r.ok ? r.json() : null)).then((m) => {
       if (!m || !m.clips) { updChip(); return; }
-      clips = m.clips;
-      for (const [id, c] of Object.entries(clips)) {
-        const el = new Audio(base + c.file);
-        el.preload = "auto";
-        el.addEventListener("ended", ended);
-        el.addEventListener("error", ended);
-        audio[id] = el;
-      }
-      updChip();
-      if (enabled) say("online");
+      useClips(m.clips);
     }).catch(() => updChip());
+  }
+  function useClips(c) {
+    clips = c;
+    for (const [id, x] of Object.entries(clips)) {
+      const el = new Audio(base + x.file);
+      el.preload = "auto";
+      el.addEventListener("ended", ended);
+      el.addEventListener("error", ended);
+      audio[id] = el;
+    }
+    updChip();
+    if (enabled) say("online");
   }
   document.addEventListener("keydown", (e) => {
     if ((e.key === "v" || e.key === "V") && !e.metaKey && !e.ctrlKey) toggle();
@@ -181,5 +201,5 @@ const Voice = (() => {
   });
   load();
 
-  return { update, say, toggle, history };
+  return { update, say, toggle, history, _test_load: useClips };
 })();
