@@ -104,6 +104,13 @@ table.att td:first-child { text-align: left; font: 700 12px var(--sans); letter-
 .sw.ghost { background: var(--truth); opacity: .7; }
 .sw.est { background: var(--lock); }
 
+#navPanel[hidden] { display: none; }
+#navmap { flex: 1; width: 100%; min-height: 0; display: block; }
+.navread { display: grid; grid-template-columns: 0.8fr 1.4fr 1fr; gap: 8px; margin-bottom: 4px; }
+.navread > div { display: flex; flex-direction: column; gap: 1px; }
+.navread .num { font-size: 15px; white-space: nowrap; }
+body.with-nav #dynPanel { display: none; }
+
 #chartPanel { grid-area: chart; display: flex; flex-direction: column; }
 #chart { flex: 1; width: 100%; min-height: 0; display: block; }
 

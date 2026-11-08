@@ -212,11 +212,49 @@ fitted to 0.12 px). Every one of the 192 scan frames locked in each rendered run
 - **Fake-camera fixes:** the edge of the screen's glow shows up as a row of blobs (dropped
   within 10 px of the edge). Noise blobs: only the 8 brightest unmatched blobs per frame are kept.
 
-Next steps (not done):
-- sim.live: a hidden position as well as the hidden attitude, with planets drawn through `render(extra=...)`
-  and the position published in the truth packet.
-- A `point <ra> <dec>` command on UDP 5006, so the navigator can drive its own scan.
-- solve_live / a navigator process that collects candidates across the scan and publishes P and its covariance.
-- A dashboard solar-system map: true P, estimated P, the ellipsoid, and the sighted bodies.
-- A photometric check (blob brightness vs predicted magnitude) to rule out Earth/Moon swaps.
+### Live (sim.live → solve_live → dashboard)
+
+```
+demo/fake_demo.sh --nav        # everything, no camera; dashboard POSITION panel
+# or by hand:
+.venv/bin/python -m sim.live --window --planets
+.venv/bin/python -m camera.solve_live --follow-sim --nav --nav-scan 3
+.venv/bin/python -m dashboard
+```
+
+- **`sim.live --planets`** gives the spacecraft a hidden random position: 0.7–2 AU from the Sun,
+  within ±3° of the ecliptic, epoch `--jd`, default 2026-11-08. It draws Mercury to Saturn and the
+  Moon where they appear from there; the Sun is never drawn.
+  - New truth fields: `pos_km`, `jd`, and `planets` (as drawn, so `--follow-sim` and the
+    dashboard redraw the same screen).
+  - New commands on UDP 5006: `point <ra> <dec> [roll]` (hold this attitude; tumbling stops) and
+    `pos random` (key `n`).
+- **`solve_live --nav`**: after each LOCK it runs `CandidateFinder`: refit the attitude on all stars,
+  then list the non-star blobs as inertial rays. `LiveNavigator` keeps these rays and forgets any
+  not seen for `--nav-memory` s (default 60). A background thread re-solves the position whenever
+  the list changes.
+  - `--nav-scan 3` sends sim.live a `point` command every 3 s, for 8 pointings along the ecliptic.
+    A full scan takes 24 s.
+  - Every estimate packet carries a `nav` block: position, covariance, 1σ axes, bodies used,
+    distance from the Sun and to Earth (± the 1σ along that line), and `err_km` against the
+    hidden truth.
+- **Dashboard**: a POSITION panel appears when `nav` data arrives (it replaces the tumble/glare
+  strip).
+  - Readouts: distance from the Sun, distance to Earth ± its 1σ, and the error against the truth.
+  - Map: top view of the ecliptic, with orbits, planets, the sight lines used, the hidden truth
+    (dashed ring) and the estimate (green).
+  - Zoom inset: the 1σ and 3σ error ellipse in the ecliptic plane, the offset to the truth, a km
+    scale bar and the out-of-plane 1σ.
+
+**First live run** (`--seed 4`, hidden position 1.926 AU from the Sun):
+- 400/400 frames locked.
+- After one scan (~25 s): 7 bodies; Earth is 411.392 million km away ± 23,000 km; the error vs
+  truth is 4,648 km.
+- The 1σ ellipse is 23,000 × 8,800 km (σ = 10″, deliberately conservative).
+
+Not done yet:
+- A photometric check (blob brightness against predicted magnitude) to rule out Earth/Moon swaps.
+- The scan ignores the Sun. sim.live never draws it, so no pointing is excluded around it. A real
+  spacecraft would skip pointings near the Sun and add a sun sensor.
+- Console/voice integration: the OLED, servos and voice callouts don't know about position yet.
 - The real camera.

@@ -152,7 +152,9 @@ class FrameRenderer(threading.Thread):
                     omega = rv / (t - self.prev[0])
             self.prev = (t, att)
             sk = self.hub.sky.renderer(vw, vh, fov)
-            img = sk.render(att, omega, float(truth.get("exposure", 0.1)) if omega is not None else 0.0)
+            from sim.planets import extra_from_list   # planets on screen (sim.live --planets)
+            img = sk.render(att, omega, float(truth.get("exposure", 0.1)) if omega is not None else 0.0,
+                            extra=extra_from_list(truth.get("planets")))
             if truth.get("glare"):
                 sk.glare(img, corner=(1.0, 1.0))
             if truth.get("flash"):
@@ -163,6 +165,59 @@ class FrameRenderer(threading.Thread):
             self.jpeg, self.id = buf.tobytes(), self.id + 1
 
 
+# ---------------------------------------------------------------- position from planets
+class NavMap:
+    """Solar-system map data for the POSITION panel: estimate (solve_live --nav) vs hidden truth
+    (sim.live --planets), planet positions, error ellipse projected on the ecliptic plane."""
+
+    def __init__(self):
+        self.eph, self.err, self._cache = None, None, (None, None)
+
+    def _planets(self, jd):
+        if self._cache[0] == jd:
+            return self._cache[1]
+        try:
+            from sim import planets as pl
+            if self.eph is None:
+                self.eph = pl.Ephemeris()
+            pos = self.eph.positions(jd, bodies=pl.PLANETS)
+            out = {b: (pl.icrf_to_ecliptic(X) / pl.AU_KM).tolist() for b, X in pos.items()}
+        except (SystemExit, Exception) as e:   # no data/de421.bsp: draw without planets
+            if self.err is None:
+                self.err = repr(e)
+                print("[nav map] no ephemeris:", e)
+            out = {}
+        self._cache = (jd, out)
+        return out
+
+    def build(self, nav, truth):
+        from sim import planets as pl
+        if not nav and not (truth or {}).get("pos_km"):
+            return None
+        jd = (nav or {}).get("jd") or (truth or {}).get("jd") or pl.EPOCH_JD
+        out = {"status": (nav or {}).get("status"), "n_cand": (nav or {}).get("n_cand"),
+               "planets": self._planets(jd)}
+        tp = (truth or {}).get("pos_km")
+        if tp:
+            out["truth_au"] = (pl.icrf_to_ecliptic(np.asarray(tp)) / pl.AU_KM).tolist()
+        if nav and nav.get("pos_km"):
+            P = np.asarray(nav["pos_km"])
+            out["est_au"] = (pl.icrf_to_ecliptic(P) / pl.AU_KM).tolist()
+            for k in ("axes_km", "bodies", "r_au", "earth_km", "earth_sigma_km", "err_km", "age_s",
+                      "resid_rms_arcsec"):
+                out[k] = nav.get(k)
+            M = pl.icrf_to_ecliptic(np.eye(3))          # rows: ICRF basis in ecliptic coords
+            C = M.T @ np.asarray(nav["cov_km2"]) @ M    # covariance in ecliptic coords
+            val, vec = np.linalg.eigh(C[:2, :2])
+            out["ellipse_km"] = [float(np.sqrt(max(val[1], 0))), float(np.sqrt(max(val[0], 0))),
+                                 float(math.atan2(vec[1, 1], vec[0, 1]))]
+            out["sigma_z_km"] = float(np.sqrt(max(C[2, 2], 0)))
+            if tp:
+                e = pl.icrf_to_ecliptic(np.asarray(tp) - P)
+                out["err_ecl_km"] = e.tolist()
+        return out
+
+
 # ---------------------------------------------------------------- state hub
 class Hub(threading.Thread):
     def __init__(self, truth, est, solve_rate_path, mode_label):
@@ -171,6 +226,7 @@ class Hub(threading.Thread):
         self.solve_rate_path = pathlib.Path(solve_rate_path)
         self.mode_label = mode_label
         self.sky = SkyData()
+        self.navmap = NavMap()
         self.frames = FrameRenderer(self)
         self.cond = threading.Condition()
         self.snapshot, self.seq = "{}", 0
@@ -296,6 +352,7 @@ class Hub(threading.Thread):
                       "session_n": self.session["n"], "session_lock": self.session["lock"],
                       "uptime": now - self.t0},
             "solve_rate": self.solve_rate,
+            "nav": self.navmap.build((es or {}).get("nav"), paired if (paired or {}).get("pos_km") else tr),
         }
 
 

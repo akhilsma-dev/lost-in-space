@@ -98,6 +98,50 @@ class Ephemeris:
         return out
 
 
+def icrf_to_ecliptic(v):
+    """ICRF vectors (rows) -> ecliptic J2000 (x to the equinox, z to the ecliptic north pole)."""
+    e = math.radians(OBLIQUITY_DEG)
+    ce, se = math.cos(e), math.sin(e)
+    M = np.array([[1, 0, 0], [0, ce, -se], [0, se, ce]])
+    return np.asarray(v, np.float64) @ M
+
+
+MIN_BODY_GAP_AU = 0.05   # a random observer starts at least this far from every planet
+
+
+def random_observer(rng, eph, jd, r_au=(0.7, 2.0), lat_deg=3.0):
+    """Hidden spacecraft position (heliocentric ICRF km): r_au from the Sun, ecliptic latitude
+    within +/- lat_deg, more than MIN_BODY_GAP_AU from any planet."""
+    pos = eph.positions(jd, bodies=PLANETS)
+    while True:
+        P = rng.uniform(*r_au) * AU_KM * ecliptic_unit(rng.uniform(0, 360), rng.uniform(-lat_deg, lat_deg))
+        if min(np.linalg.norm(P - X) for X in pos.values()) > MIN_BODY_GAP_AU * AU_KM:
+            return P
+
+
+def sky_list(app, mag_limit=5.5):
+    """eph.apparent(...) -> [[name, ra_deg, dec_deg, mag], ...] for the bodies a screen would show
+    (the Sun is never drawn). This is what sim.live puts in its truth packet as "planets"."""
+    out = []
+    for b, s in app.items():
+        if b == "Sun" or s["mag"] > mag_limit:
+            continue
+        d = s["dir"]
+        out.append([b, round(math.degrees(math.atan2(d[1], d[0])) % 360, 7),
+                    round(math.degrees(math.asin(max(-1.0, min(1.0, d[2])))), 7), round(s["mag"], 2)])
+    return out
+
+
+def extra_from_list(lst):
+    """[[name, ra, dec, mag], ...] -> (unit vectors (N, 3), mags (N,)) for SkyRenderer.render(extra=...)."""
+    if not lst:
+        return None
+    ra = np.radians([r[1] for r in lst])
+    dec = np.radians([r[2] for r in lst])
+    v = np.stack([np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra), np.sin(dec)], -1)
+    return v, np.array([r[3] for r in lst], np.float32)
+
+
 def magnitude(name, X, P):
     """Approximate visual magnitude and phase angle of body `name` at heliocentric X seen from P."""
     d = np.asarray(X) - np.asarray(P)

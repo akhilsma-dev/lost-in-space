@@ -22,6 +22,16 @@ Truth: sim.live publishes truth on UDP 5009 (the dashboard has 5005); each frame
 paired with the truth packet received closest to (capture time - --latency) and the
 pointing error is printed. In --sim and --follow-sim modes truth is exact.
 
+Position from planets (--nav; run sim.live --planets): after each LOCK, blobs that are not
+catalogue stars become planet candidates (camera.navigate); their inertial directions build up
+over frames and a background thread fixes the heliocentric position with an error ellipsoid.
+--nav-scan S also drives the scan: every S seconds it sends sim.live "point <ra> <dec> <roll>"
+(UDP 5006) for the next of 8 pointings along the ecliptic. Each estimate packet then carries
+  "nav": {"status": "collecting"|"no fix"|"fix", "n_cand", "jd", and with a fix: "pos_km",
+          "cov_km2", "axes_km" (1-sigma), "bodies", "resid_rms_arcsec", "r_au", "earth_km",
+          "earth_sigma_km", "age_s", "err_km" (vs the sim's hidden position, if known)}
+      .venv/bin/python -m camera.solve_live --follow-sim --nav --nav-scan 3
+
 Output: one JSON line per frame on UDP 127.0.0.1:5008 (dashboard), and the same
 line on 5007 (bridge.serial_bridge -> console OLED/LED/servos; --bridge-port 0 = off)
   {"t","ra","dec","roll","fov","status","confidence","matches","prob","rmse","solve_ms",
@@ -116,7 +126,9 @@ class FollowSource:
             self.sky = SkyRenderer(self.sw, self.sh, self.fov)
         att = from_radecroll(tr["ra"], tr["dec"], tr["roll"])
         omega = np.radians(tr.get("omega") or [0.0, 0.0, 0.0])
-        img = self.sky.render(att, omega if np.any(omega) else None, tr.get("exposure", 0.0))
+        from sim.planets import extra_from_list   # planets on screen (sim.live --planets)
+        img = self.sky.render(att, omega if np.any(omega) else None, tr.get("exposure", 0.0),
+                              extra=extra_from_list(tr.get("planets")))
         if tr.get("glare"):
             self.sky.glare(img, corner=tuple(tr.get("glare_corner") or (1.0, 1.0)))
         if tr.get("flash"):
@@ -262,6 +274,15 @@ def main():
     sol.add_argument("--min-matches", type=int, default=8)
     sol.add_argument("--prob-max", type=float, default=1e-6)
     sol.add_argument("--rmse-max", type=float, default=900.0, help="arcsec, for the confidence score")
+    nav = ap.add_argument_group("position from planets")
+    nav.add_argument("--nav", action="store_true", help="find planets after each lock and fix the position")
+    nav.add_argument("--nav-scan", type=float, default=0.0,
+                     help="drive sim.live through 8 ecliptic pointings, this many s each (0 = don't)")
+    nav.add_argument("--nav-sigma", type=float, default=10.0, help="planet direction error, arcsec (ellipsoid)")
+    nav.add_argument("--nav-memory", type=float, default=60.0, help="forget candidates not seen for this long, s")
+    nav.add_argument("--nav-jd", type=float, default=2461352.5,
+                     help="epoch (TDB JD) if the truth packet carries none; sim.live --planets default")
+    nav.add_argument("--cmd-port", type=int, default=5006, help="sim.live command port (for --nav-scan)")
     io = ap.add_argument_group("io")
     io.add_argument("--truth-port", type=int, default=TRUTH_PORT)
     io.add_argument("--no-truth", action="store_true")
@@ -279,6 +300,7 @@ def main():
     src = FollowSource(a) if a.follow_sim else SimSource(a) if a.sim else CameraSource(a)
     solver = Solver(a, src)
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    navi, scan_i, scan_t, nav_print = None, 0, 0.0, 0.0
     stats = {"n": 0, "lock": 0, "err": [], "roll": [], "ms": [], "nc": [], "tp": 0}
     shot, shot_lock = None, False
     try:
@@ -306,6 +328,31 @@ def main():
                 if truth:
                     msg["err_arcsec"] = round(pointing_error_arcsec(msg["ra"], msg["dec"], truth["ra"], truth["dec"]), 1)
                     msg["roll_err_deg"] = round(roll_error_deg(msg["roll"], truth["roll"]), 3)
+            if a.nav:
+                if a.nav_scan > 0 and time.time() - scan_t > a.nav_scan:   # next scan pointing
+                    from camera.navigate import ecliptic_scan_radec
+                    ra_, dec_, roll_ = ecliptic_scan_radec(scan_i)
+                    out.sendto(f"point {ra_:.4f} {dec_:.4f} {roll_:.3f}".encode(), ("127.0.0.1", a.cmd_port))
+                    scan_i, scan_t = scan_i + 1, time.time()
+                if status == "LOCK":
+                    if navi is None:
+                        from camera.navigate import CandidateFinder, LiveNavigator
+                        navi = LiveNavigator(CandidateFinder(src.sw, src.sh, fov, src.H), a.nav_jd,
+                                             sigma_arcsec=a.nav_sigma, memory_s=a.nav_memory)
+                        print(f"[nav] navigator ready ({src.sw}x{src.sh}, FOV {fov} deg)")
+                    if truth and truth.get("jd"):
+                        navi.jd = truth["jd"]   # the spacecraft clock; the sim's epoch
+                    navi.observe(gray, from_radecroll(msg["ra"], msg["dec"], msg["roll"]), t)
+                msg["nav"] = navi.packet(truth) if navi else {"status": "collecting", "n_cand": 0}
+                nv = msg["nav"]
+                if time.time() - nav_print > 5:
+                    nav_print = time.time()
+                    print(f"[nav] {nv['status']}, {nv['n_cand']} candidates"
+                          + (f" | {nv['r_au']:.4f} AU from the Sun, Earth {nv['earth_km'] / 1e6:.3f} Mkm "
+                             f"+/- {nv['earth_sigma_km']:,.0f} km, 1-sigma {nv['axes_km'][0]:,.0f} km, "
+                             f"bodies {'+'.join(nv['bodies'])}"
+                             + (f", ERROR {nv['err_km']:,.0f} km" if 'err_km' in nv else "")
+                             if nv.get("pos_km") else ""))
             pkt = json.dumps(msg).encode()
             out.sendto(pkt, ("127.0.0.1", a.estimate_port))
             if a.bridge_port:

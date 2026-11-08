@@ -287,16 +287,6 @@ W, H, FOV = 1920, 1080, 50.0
 SCAN_ELONG = np.arange(1, 9) * 40.0      # 8 pointings along the ecliptic, Sun-relative, 50 x 29 deg each
 SUN_EXCL_DEG = 35.0                        # no pointing whose boresight is this close to the Sun
 VIS_MAG = 5.5                              # render / detection limit (same as the stars)
-MIN_BODY_GAP_AU = 0.05                     # don't start inside a planet's neighbourhood
-
-
-def random_observer(rng, eph, jd):
-    pos = eph.positions(jd, bodies=pl.PLANETS)
-    while True:
-        r = rng.uniform(0.7, 2.0) * pl.AU_KM
-        P = r * pl.ecliptic_unit(rng.uniform(0, 360), rng.uniform(-3, 3))
-        if min(np.linalg.norm(P - X) for X in pos.values()) > MIN_BODY_GAP_AU * pl.AU_KM:
-            return P
 
 
 def scan_attitudes(sun_dir):
@@ -344,24 +334,18 @@ def perturb(u, sigma_rad, rng):
     return v / np.linalg.norm(v, axis=1, keepdims=True)
 
 
-class FrameSolver:
-    """Rendered frames -> tetra3 attitude -> planet-candidate rays (inertial)."""
+class CandidateFinder:
+    """After a star lock: refit the attitude on all stars, then list the blobs that are not
+    catalogue stars (planet candidates) as inertial rays. Screen geometry w x h px, fov deg;
+    H = camera->screen homography (None if the frame already is in screen pixels)."""
 
-    def __init__(self, a):
-        from camera.common import load_tetra3
+    def __init__(self, w, h, fov, H=None, max_blobs=300, cand_max_area=3000, refine=True, star_reject_px=4.0,
+                 edge_px=10.0, max_cand=8):
         from sim.sky import SkyRenderer, load_stars
-        self.a = a
-        self.t3 = load_tetra3()
-        self.sky = SkyRenderer(W, H, FOV)
-        self.cam = self.H = None
-        if a.sim_camera:
-            from camera.calibrate import fit
-            from camera.fakecam import FakeCamera
-            from sim.sky import checkerboard
-            self.cam = FakeCamera(W, H, seed=a.seed)
-            r = fit(self.cam.view(checkerboard(W, H)[0]), W, H)
-            self.H = r["H"]
-            print(f"[sim-camera] homography fitted on the fake checkerboard: RMS {r['rms']:.3f} screen px")
+        self.w, self.h, self.fov, self.H = w, h, fov, H
+        self.max_blobs, self.cand_max_area, self.refine = max_blobs, cand_max_area, refine
+        self.star_reject_px, self.edge_px, self.max_cand = star_reject_px, edge_px, max_cand
+        self.sky = SkyRenderer(w, h, fov)
         _, _, self.cat = load_stars(6.5)   # everything that could leave a blob that isn't a planet
         self.cat_drawn = self.sky.vec      # stars the screen actually shows (attitude refinement)
 
@@ -371,19 +355,14 @@ class FrameSolver:
         peak, b = self.sky.blob_style(np.atleast_1d(mag))
         return peak * 2 * math.pi * self.sky.SIGMA_BINS[b] ** 2
 
-    def frame(self, att, extra, rng):
-        from sim.sky import SkyRenderer
-        img = self.sky.render(att, extra=extra)
-        img = SkyRenderer.to_u8(img, noise=self.a.noise, rng=rng)
-        return img if self.cam is None else self.cam.view(img)
-
     def blobs(self, gray, flux=False, **kw):
-        """Centroids in screen pixels (warped from camera pixels with --sim-camera), brightest first.
+        """Centroids in screen pixels (warped from camera pixels when H is set), brightest first.
         flux=True also returns a brightness per blob (background-subtracted 9x9 sum around it)."""
         from camera.common import centroids, warp_points
+        w, h = self.w, self.h
         cc = centroids(gray, **kw)
         c = cc if self.H is None else warp_points(cc, self.H)
-        keep = (c[:, 0] > -0.5) & (c[:, 0] < W - 0.5) & (c[:, 1] > -0.5) & (c[:, 1] < H - 0.5)
+        keep = (c[:, 0] > -0.5) & (c[:, 0] < w - 0.5) & (c[:, 1] > -0.5) & (c[:, 1] < h - 0.5)
         if not flux:
             return c[keep]
         g = gray.astype(np.float32)
@@ -396,11 +375,63 @@ class FrameSolver:
         o = np.argsort(-f[keep], kind="stable")
         return c[keep][o], f[keep][o]
 
+    def find(self, gray, att):
+        """gray: the frame tetra3 locked on, att: its attitude (sim.sky Rotation).
+        Returns (refined attitude, n stars in the refit, rays (M, 3), screen px (M, 2), flux (M,))."""
+        w, h = self.w, self.h
+        # candidate pass: planets brighter than mag ~1 render as blobs bigger than tetra3's 100 px
+        # star-area cap, so look again with the cap lifted
+        c, fl = self.blobs(gray, flux=True, max_returned=self.max_blobs, max_area=self.cand_max_area)
+        n_ref = 0
+        if self.refine:
+            att, n_ref = refine_attitude(att, c, self.cat_drawn, self.sky)
+        # drop blobs on any catalogue star; what is left is a planet candidate
+        px, py, front = self.sky.project(self.cat, att)
+        on = front & (px > -10) & (px < w + 10) & (py > -10) & (py < h + 10)
+        sp = np.column_stack([px[on], py[on]])
+        if len(c) and len(sp):
+            d2 = ((c[:, None, :] - sp[None]) ** 2).sum(2).min(1)
+            c, fl = c[d2 > self.star_reject_px ** 2], fl[d2 > self.star_reject_px ** 2]
+        # the screen border (LCD glow edge through a camera) shows up as a row of blobs; a planet
+        # there is also in a neighbouring scan frame. Keep the brightest few: noise, JPEG blocks and
+        # hot pixels leave many faint blobs that would blow up the brute-force identification.
+        e = self.edge_px
+        m = (c[:, 0] > e) & (c[:, 0] < w - 1 - e) & (c[:, 1] > e) & (c[:, 1] < h - 1 - e)
+        c, fl = c[m][:self.max_cand], fl[m][:self.max_cand]
+        return att, n_ref, pixel_rays(c, w, h, self.fov, att), c, fl
+
+
+class FrameSolver:
+    """Benchmark: rendered frames -> tetra3 attitude -> planet-candidate rays (inertial)."""
+
+    def __init__(self, a):
+        from camera.common import load_tetra3
+        self.a = a
+        self.t3 = load_tetra3()
+        self.cam = H_ = None
+        if a.sim_camera:
+            from camera.calibrate import fit
+            from camera.fakecam import FakeCamera
+            from sim.sky import checkerboard
+            self.cam = FakeCamera(W, H, seed=a.seed)
+            r = fit(self.cam.view(checkerboard(W, H)[0]), W, H)
+            H_ = r["H"]
+            print(f"[sim-camera] homography fitted on the fake checkerboard: RMS {r['rms']:.3f} screen px")
+        self.finder = CandidateFinder(W, H, FOV, H_, a.max_blobs, a.cand_max_area, a.refine, a.star_reject_px,
+                                      a.edge_px, a.max_cand)
+        self.sky, self.H, self.flux = self.finder.sky, H_, self.finder.flux
+
+    def frame(self, att, extra, rng):
+        from sim.sky import SkyRenderer
+        img = self.sky.render(att, extra=extra)
+        img = SkyRenderer.to_u8(img, noise=self.a.noise, rng=rng)
+        return img if self.cam is None else self.cam.view(img)
+
     def solve(self, gray):
         """Returns (attitude or None, info dict, candidate rays (M, 3), candidate pixels (M, 2))."""
         from sim.sky import from_radecroll
         a = self.a
-        c = self.blobs(gray, max_returned=a.max_centroids, max_area=a.max_area)   # as solve_live
+        c = self.finder.blobs(gray, max_returned=a.max_centroids, max_area=a.max_area)   # as solve_live
         res = (self.t3.solve_from_centroids(c[:, ::-1], (H, W), fov_estimate=FOV,
                                             fov_max_error=a.fov_max_error, solve_timeout=a.timeout_ms,
                                             return_matches=True)
@@ -408,27 +439,9 @@ class FrameSolver:
         info = {"n_blobs": len(c), "matches": int(res.get("Matches") or 0)}
         if res.get("RA") is None or res["Matches"] < a.min_matches or res["Prob"] > a.prob_max:
             return None, info, np.zeros((0, 3)), np.zeros((0, 2))
-        att = info["att_tetra3"] = from_radecroll(res["RA"], res["Dec"], res["Roll"])
-        # candidate pass: planets brighter than mag ~1 render as blobs bigger than tetra3's 100 px
-        # star-area cap, so look again with the cap lifted
-        c, fl = self.blobs(gray, flux=True, max_returned=a.max_blobs, max_area=a.cand_max_area)
-        if a.refine:
-            att, info["n_refine"] = refine_attitude(att, c, self.cat_drawn, self.sky)
-        # drop blobs on any catalogue star; what is left is a planet candidate
-        px, py, front = self.sky.project(self.cat, att)
-        on = front & (px > -10) & (px < W + 10) & (py > -10) & (py < H + 10)
-        sp = np.column_stack([px[on], py[on]])
-        if len(c) and len(sp):
-            d2 = ((c[:, None, :] - sp[None]) ** 2).sum(2).min(1)
-            c, fl = c[d2 > a.star_reject_px ** 2], fl[d2 > a.star_reject_px ** 2]
-        # centroids come brightest first; planets are among the brightest blobs, while noise,
-        # JPEG blocks and hot pixels leave many faint ones that would blow up the brute-force ID
-        # the screen border (LCD glow edge through the camera) shows up as a row of blobs; a planet
-        # there is also in the neighbouring scan frame (they overlap by 10 deg)
-        e = a.edge_px
-        m = (c[:, 0] > e) & (c[:, 0] < W - 1 - e) & (c[:, 1] > e) & (c[:, 1] < H - 1 - e)
-        c, info["flux"] = c[m][:a.max_cand], fl[m][:a.max_cand]
-        return att, info, pixel_rays(c, W, H, FOV, att), c
+        info["att_tetra3"] = from_radecroll(res["RA"], res["Dec"], res["Roll"])
+        att, info["n_refine"], rays, pix, info["flux"] = self.finder.find(gray, info["att_tetra3"])
+        return att, info, rays, pix
 
 
 def refine_attitude(att, c, cat, sky, match_px=3.0, n_iter=3):
@@ -439,7 +452,7 @@ def refine_attitude(att, c, cat, sky, match_px=3.0, n_iter=3):
     n = 0
     for _ in range(n_iter):
         px, py, front = sky.project(cat, att)
-        on = np.flatnonzero(front & (px > -5) & (px < W + 5) & (py > -5) & (py < H + 5))
+        on = np.flatnonzero(front & (px > -5) & (px < sky.w + 5) & (py > -5) & (py < sky.h + 5))
         if not len(on) or not len(c):
             break
         sp = np.column_stack([px[on], py[on]])
@@ -449,12 +462,123 @@ def refine_attitude(att, c, cat, sky, match_px=3.0, n_iter=3):
         n = int(m.sum())
         if n < 6:
             break
-        v = pixel_rays(c[m], W, H, FOV)            # camera frame
+        v = pixel_rays(c[m], sky.w, sky.h, sky.fov)   # camera frame
         s_ = cat[on[j[m]]]                          # inertial
         U, _, Vt = np.linalg.svd(s_.T @ v)
         D = np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))])
         att = Rotation.from_matrix(U @ D @ Vt)
     return att, n
+
+
+# ---------- live navigator (camera.solve_live --nav) ----------
+class LiveNavigator:
+    """Keeps planet candidates seen in locked frames (inertial directions don't change as the
+    spacecraft turns, so a scan or a tumble builds up the list), and re-solves the position in a
+    background thread whenever the list changes. Candidates not seen for memory_s are dropped."""
+
+    def __init__(self, finder, jd, sigma_arcsec=10.0, tol_arcsec=120.0, memory_s=60.0, merge_deg=0.05,
+                 max_solve=12, eph=None):
+        import threading
+        self.finder, self.jd = finder, jd
+        self.sigma, self.tol, self.memory, self.merge = sigma_arcsec, tol_arcsec, memory_s, merge_deg
+        self.max_solve = max_solve
+        self.eph = eph or pl.Ephemeris()
+        self.buf = []            # dicts: dir (3,), flux, n, t
+        self.lock = threading.Lock()
+        self.dirty = threading.Event()
+        self.fix = None          # last result (dict) or None
+        self.fix_note = "collecting"
+        self.last_att = None
+        threading.Thread(target=self._run, daemon=True, name="nav").start()
+
+    def observe(self, gray, att, t=None):
+        """Feed one locked frame. Returns the refined attitude."""
+        t = time.time() if t is None else t
+        att, _, rays, _, fl = self.finder.find(gray, att)
+        self.last_att = att
+        cos_m = math.cos(math.radians(self.merge))
+        with self.lock:
+            for r, f in zip(rays, fl):
+                for c in self.buf:
+                    if c["dir"] @ r > cos_m:
+                        c["dir"] = (c["dir"] * c["n"] + r) / (c["n"] + 1)
+                        c["dir"] /= np.linalg.norm(c["dir"])
+                        c["n"] += 1
+                        c["flux"] = max(c["flux"], f)
+                        c["t"] = t
+                        break
+                else:
+                    self.buf.append({"dir": r, "flux": f, "n": 1, "t": t})
+            self.buf = [c for c in self.buf if t - c["t"] < self.memory]
+        if len(rays):
+            self.dirty.set()
+        return att
+
+    def reset(self):
+        with self.lock:
+            self.buf = []
+        self.fix, self.fix_note = None, "collecting"
+
+    def candidates(self):
+        """Brightest first; one-off blobs (seen in a single frame) go after repeat sightings."""
+        with self.lock:
+            cs = sorted(self.buf, key=lambda c: (c["n"] < 2, -c["flux"]))
+            return np.array([c["dir"] for c in cs]).reshape(-1, 3)
+
+    def _run(self):
+        while True:
+            self.dirty.wait()
+            self.dirty.clear()
+            cand = self.candidates()[:self.max_solve]
+            if len(cand) < 3:
+                self.fix_note = "collecting"
+                continue
+            t0 = time.time()
+            try:
+                nav = navigate(cand, self.eph, self.jd, sigma_arcsec=self.sigma, tol_arcsec=self.tol,
+                               flux=self.finder.flux)
+            except Exception as e:  # never kill the solver over a bad fix
+                print("[nav]", repr(e))
+                nav = None
+            if nav is None:
+                self.fix_note = "no fix"
+                continue
+            nav["t"], nav["solve_s"], nav["n_cand"] = time.time(), time.time() - t0, len(cand)
+            self.fix, self.fix_note = nav, "fix"
+            time.sleep(0.5)   # at most ~2 fixes / s
+
+    def packet(self, truth=None):
+        """The "nav" block of a solve_live estimate packet."""
+        with self.lock:
+            n_cand = len(self.buf)
+        out = {"status": self.fix_note, "n_cand": n_cand, "jd": self.jd}
+        f = self.fix
+        if f is None:
+            return out
+        P, cov = f["P"], f["cov"]
+        earth = self.eph.positions(self.jd, bodies=["Earth"])["Earth"]
+        de = earth - P
+        u = de / np.linalg.norm(de)
+        out.update({
+            "pos_km": [round(float(v), 1) for v in P], "cov_km2": np.round(cov, 1).tolist(),
+            "axes_km": [round(float(v), 1) for v in f["axes_km"]],
+            "bodies": f["names"], "resid_rms_arcsec": round(float(np.sqrt(np.mean(f["resid_arcsec"] ** 2))), 2),
+            "r_au": round(float(np.linalg.norm(P) / pl.AU_KM), 6),
+            "earth_km": round(float(np.linalg.norm(de)), 1),
+            "earth_sigma_km": round(float(np.sqrt(u @ cov @ u)), 1),
+            "age_s": round(time.time() - f["t"], 2), "solve_s": round(f["solve_s"], 3)})
+        if truth and truth.get("pos_km"):
+            out["err_km"] = round(float(np.linalg.norm(P - np.asarray(truth["pos_km"]))), 1)
+        return out
+
+
+def ecliptic_scan_radec(i, n=8):
+    """(ra, dec, roll) of scan pointing i: boresight on the ecliptic, image x along it."""
+    from sim.sky import to_radecroll
+    from scipy.spatial.transform import Rotation
+    lon = (np.arange(n) * 360.0 / n + 180.0 / n)[i % n]
+    c, right = pl.ecliptic_unit(lon, 0.0), pl.ecliptic_unit(lon + 90.0, 0.0)
+    return to_radecroll(Rotation.from_matrix(np.column_stack([right, np.cross(c, right), c])))
 
 
 def merge_candidates(rays, flux=None, tol_deg=0.05):
@@ -521,7 +645,7 @@ def run_bench(a):
     rows = []
     t_start = time.time()
     for i in range(a.n):
-        P_true = random_observer(pos_rng, eph, jd)
+        P_true = pl.random_observer(pos_rng, eph, jd)
         app = eph.apparent(P_true, jd)
         sun_dir = -P_true / np.linalg.norm(P_true)   # light time to the Sun: < 1 km of solar motion
         scan = scan_attitudes(sun_dir)
@@ -607,7 +731,7 @@ def summarize(rows, a, wall_s):
 
     lines = [f"# Position from planets: offline benchmark{f" [{a.tag}]" if a.tag else ""} ({a.n} positions, {wall_s / 60:.1f} min wall)", "",
              f"Epoch TDB JD {a.jd}. Hidden observer: 0.7-2 AU from the Sun, ecliptic latitude +/-3 deg, "
-             f"more than {MIN_BODY_GAP_AU} AU from any planet. Bodies: Mercury, Venus, Earth, Moon, Mars, "
+             f"more than {pl.MIN_BODY_GAP_AU} AU from any planet. Bodies: Mercury, Venus, Earth, Moon, Mars, "
              f"Jupiter and Saturn barycentres (DE421), visible if mag <= {VIS_MAG} and inside one of "
              f"{len(SCAN_ELONG)} ecliptic scan frames ({W}x{H}, {FOV:.0f} deg FOV, boresights at Sun elongation "
              f"40, 80, ..., 320 deg; no pointing within {SUN_EXCL_DEG:.0f} deg of the Sun).", "",
