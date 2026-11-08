@@ -383,9 +383,13 @@ function loadConfig() {
     if (!c.console_url) return;
     const u = new URL(c.console_url, location.href);
     u.searchParams.set("embed", "1");
-    $("consoleFrame").src = u.href;
     $("consolePanel").hidden = false;
     document.body.classList.add("with-console");
+    // the console (bridge) can start after the dashboard: load the frame only once it answers
+    const tryLoad = () => fetch(u.href, { mode: "no-cors", cache: "no-store" })
+      .then(() => { $("consoleFrame").src = u.href; })
+      .catch(() => setTimeout(tryLoad, 1000));
+    tryLoad();
   }).catch(() => {});
 }
 loadConfig();

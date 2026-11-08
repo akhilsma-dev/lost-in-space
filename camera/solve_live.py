@@ -14,8 +14,9 @@ are warped through the camera->screen homography (cheaper and more exact than
 warping the image). In screen pixels the geometry is an ideal pinhole with the
 sim's known FOV, so tetra3 gets a tight fov_estimate.
 
-Status: LOCK when tetra3 solves with >= --min-matches stars and false-match
-probability Prob <= --prob-max; otherwise LOST. confidence (0..1) =
+Status: a frame is good when tetra3 solves with >= --min-matches stars and
+false-match probability Prob <= --prob-max. LOCK needs --lock-frames good frames
+in a row (SEARCH while acquiring); once locked, the first bad frame gives LOST. confidence (0..1) =
 min(1, -log10(Prob)/20) * max(0, 1 - RMSE/--rmse-max); 0 when LOST.
 
 Truth: sim.live publishes truth on UDP 5009 (the dashboard has 5005); each frame is
@@ -166,6 +167,7 @@ class CameraSource:
 class Solver:
     def __init__(self, a, src):
         self.a, self.src = a, src
+        self.locked, self.streak = False, 0   # acquisition: --lock-frames good frames in a row before LOCK
         self.t3 = load_tetra3()
         self.starnet = None
         if a.detector == "starnet":
@@ -211,13 +213,23 @@ class Solver:
         ms = (time.perf_counter() - t0) * 1000
         return c, c_cam, res, ms
 
-    def status(self, res):
+    def good(self, res):
         if res.get("RA") is None:
-            return "LOST", 0.0
+            return None
         prob, rmse, n = float(res["Prob"]), float(res["RMSE"]), int(res["Matches"])
         if n < self.a.min_matches or prob > self.a.prob_max:
-            return "LOST", 0.0
-        conf = min(1.0, -math.log10(max(prob, 1e-300)) / 20) * max(0.0, 1 - rmse / self.a.rmse_max)
+            return None
+        return min(1.0, -math.log10(max(prob, 1e-300)) / 20) * max(0.0, 1 - rmse / self.a.rmse_max)
+
+    def status(self, res):
+        conf = self.good(res)
+        if conf is None:
+            was, self.locked, self.streak = self.locked, False, 0
+            return ("LOST" if was else "SEARCH"), 0.0
+        self.streak += 1
+        if not self.locked and self.streak < self.a.lock_frames:
+            return "SEARCH", 0.0   # acquiring: solving, but not confirmed yet
+        self.locked = True
         return "LOCK", round(conf, 3)
 
 
@@ -312,6 +324,9 @@ def main():
     sol.add_argument("--timeout-ms", type=int, default=500)
     sol.add_argument("--min-matches", type=int, default=8)
     sol.add_argument("--prob-max", type=float, default=1e-6)
+    sol.add_argument("--lock-frames", type=int, default=10,
+                     help="good frames in a row before declaring LOCK (acquisition dwell; ~1 s at 10 fps). "
+                          "Once locked, one bad frame drops to LOST")
     sol.add_argument("--rmse-max", type=float, default=900.0, help="arcsec, for the confidence score")
     io = ap.add_argument_group("io")
     io.add_argument("--truth-port", type=int, default=TRUTH_PORT)
@@ -380,7 +395,7 @@ def main():
                 if msg["err_arcsec"] is not None:
                     stats["err"].append(msg["err_arcsec"])
                     stats["roll"].append(abs(msg["roll_err_deg"]))
-            line = (f"{status:4s} conf {conf:4.2f} | {len(c_scr):3d} blobs {msg['matches']:3d} matched | "
+            line = (f"{status:6s} conf {conf:4.2f} | {len(c_scr):3d} blobs {msg['matches']:3d} matched | "
                     + (f"RA {msg['ra']:7.2f} Dec {msg['dec']:6.2f} Roll {msg['roll']:6.1f} "
                        f"Prob {msg['prob']:.0e} RMSE {msg['rmse']:5.0f}\"" if solved else "no solution".ljust(62))
                     + f" | {ms:4.0f} ms"
