@@ -15,8 +15,23 @@ seed range is disjoint from training (training draws fresh random frames).
 
   .venv/bin/python -m ml.benchmark            # 200 frames per cell (2400 frames, ~15-25 min)
   .venv/bin/python -m ml.benchmark --n 20     # quick look
+  .venv/bin/python -m ml.benchmark --sim-camera --n 50
 
-Writes ml/out/bench_frames.csv, ml/out/benchmark.md, ml/out/solve_rate.png.
+Writes ml/out/bench_frames.csv, ml/out/benchmark.md, ml/out/solve_rate.png
+(with --sim-camera: the same names with a _simcam suffix).
+
+--sim-camera: every rendered frame is filmed by camera.fakecam.FakeCamera (keystone,
+defocus, LCD black glow, vignetting, sensor noise, JPEG 85), none of which StarNet saw
+in training. The camera->screen homography is auto-fitted once on the fake camera's view
+of the checkerboard (camera.calibrate.fit), exactly as camera.solve_live --sim-camera does.
+All three methods find centroids in camera pixels; the centroids are then warped to
+screen pixels (dropping any that land off screen) and solved there with the sim's known
+FOV. Plain tetra3 therefore runs as get_centroids_from_image (default settings) +
+solve_from_centroids instead of solve_from_image, which is the same thing internally.
+Recall / precision / centroid error are measured in screen pixels against the sim's
+ground truth, so they include calibration error. Two extra rows, tetra3-tuned-warp and
+StarNet-warp, instead warp the whole camera image back to screen pixels first and detect
+there (so stars have the on-screen size StarNet was trained on).
 """
 import argparse
 import math
@@ -35,15 +50,20 @@ DB = (ROOT.parent / "data" / "tetra3_wide.npz").resolve()
 RATES = [0, 2, 5, 10, 15, 20]
 GLARES = [False, True]
 METHODS = ["tetra3", "tetra3-tuned", "StarNet"]
+# --sim-camera only: detect on the camera frame warped back to screen pixels (cv2.warpPerspective with
+# the fitted homography) instead of warping the centroids. This is the input ml/detect.py documents.
+WARP_METHODS = ["tetra3-tuned-warp", "StarNet-warp"]
+ALL_METHODS = METHODS + WARP_METHODS
 CORRECT_DEG = 1.0  # a "solve" further than this from truth is a false match, not a success
 MATCH_PX = 3.0
 SOLVE = dict(fov_estimate=50.0, fov_max_error=10.0, solve_timeout=2000)
 
 _t3 = None
+_cam = None  # (FakeCamera, H_cam2screen, screen_w, screen_h) with --sim-camera
 
 
-def _init():
-    global _t3
+def _init(sim_camera=False):
+    global _t3, _cam
     import torch
     torch.set_num_threads(1)
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -54,6 +74,24 @@ def _init():
     _t3.load_database(DB)
     from ml import detect
     detect.load(device="cpu")  # one single-threaded CPU model per worker
+    if sim_camera:
+        from camera.calibrate import fit
+        from camera.fakecam import FakeCamera
+        from ml.patches import H, W
+        from sim.sky import checkerboard
+        cam = FakeCamera(W, H, seed=0)
+        r = fit(cam.view(checkerboard(W, H)[0]), W, H)
+        _cam = (cam, r["H"], W, H)
+
+
+def _to_screen(cents_yx):
+    """Camera-pixel centroids (tetra3 convention) -> screen pixels (tetra3 convention), off-screen dropped."""
+    from camera.common import warp_points
+    _, Hc, sw, sh = _cam
+    c = np.asarray(cents_yx, np.float64).reshape(-1, 2)
+    xy = warp_points(c[:, ::-1] - 0.5, Hc)  # homography maps pixel-centre (OpenCV) coordinates
+    keep = (xy[:, 0] > -0.5) & (xy[:, 0] < sw - 0.5) & (xy[:, 1] > -0.5) & (xy[:, 1] < sh - 0.5)
+    return (xy[keep] + 0.5)[:, ::-1].copy()
 
 
 def _att_err_deg(truth, res):
@@ -90,7 +128,11 @@ def run_one(job):
     seed = 1_000_000 + 10_000 * rate + 5_000 * glare + i
     fr = make_frame(np.random.default_rng(seed), rate_dps=rate, glare=glare, n_hot=20, planet=True,
                     noise=2.0, bg=4.0)
-    h, w = fr.img.shape
+    h, w = fr.img.shape  # screen size: the solve always happens in screen pixels
+    img = fr.img
+    if _cam is not None:
+        _cam[0].rng = np.random.default_rng(seed)  # reproducible camera noise per frame
+        img = _cam[0].view(fr.img)
     rows = []
 
     def record(method, res, cents, dt):
@@ -102,20 +144,44 @@ def run_one(job):
                          n_cent=len(cents), recall=rec, precision=prec, cent_err_px=cerr, junk=junk,
                          sec=dt))
 
-    t = time.time()
-    cents = tetra3.get_centroids_from_image(fr.img)
-    res = _t3.solve_from_image(Image.fromarray(fr.img), **SOLVE)
-    record("tetra3", res, np.asarray(cents).reshape(-1, 2), time.time() - t)
+    def solve(cents):
+        return _t3.solve_from_centroids(cents, (h, w), **SOLVE) if len(cents) >= 4 else {"RA": None}
+
+    if _cam is None:
+        t = time.time()
+        cents = tetra3.get_centroids_from_image(img)
+        res = _t3.solve_from_image(Image.fromarray(img), **SOLVE)
+        record("tetra3", res, np.asarray(cents).reshape(-1, 2), time.time() - t)
+    else:
+        t = time.time()
+        cents = _to_screen(tetra3.get_centroids_from_image(img))
+        record("tetra3", solve(cents), cents, time.time() - t)
 
     t = time.time()
-    cents = np.asarray(tetra3.get_centroids_from_image(fr.img, max_area=5000)).reshape(-1, 2)
-    res = _t3.solve_from_centroids(cents, (h, w), **SOLVE)
+    cents = np.asarray(tetra3.get_centroids_from_image(img, max_area=5000)).reshape(-1, 2)
+    if _cam is not None:
+        cents = _to_screen(cents)
+    res = _t3.solve_from_centroids(cents, (h, w), **SOLVE) if _cam is None else solve(cents)
     record("tetra3-tuned", res, cents, time.time() - t)
 
     t = time.time()
-    cents = star_centroids(fr.img)
-    res = _t3.solve_from_centroids(cents, (h, w), **SOLVE)
+    cents = star_centroids(img)
+    if _cam is not None:
+        cents = _to_screen(cents)
+    res = _t3.solve_from_centroids(cents, (h, w), **SOLVE) if _cam is None else solve(cents)
     record("StarNet", res, cents, time.time() - t)
+
+    if _cam is not None:
+        import cv2
+        t = time.time()
+        scr = cv2.warpPerspective(img, _cam[1], (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        t_warp = time.time() - t
+        t = time.time()
+        cents = np.asarray(tetra3.get_centroids_from_image(scr, max_area=5000)).reshape(-1, 2)
+        record("tetra3-tuned-warp", solve(cents), cents, t_warp + time.time() - t)
+        t = time.time()
+        cents = star_centroids(scr)
+        record("StarNet-warp", solve(cents), cents, t_warp + time.time() - t)
     return rows
 
 
@@ -128,17 +194,20 @@ def summarise(df):
     return s.reset_index()
 
 
-def plot(s, path):
+def plot(s, path, note=""):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    col = {"tetra3": "#c0504d", "tetra3-tuned": "#e3a33b", "StarNet": "#2f6fd6"}
+    col = {"tetra3": "#c0504d", "tetra3-tuned": "#e3a33b", "StarNet": "#2f6fd6",
+           "tetra3-tuned-warp": "#8a6d1f", "StarNet-warp": "#17a589"}
+    methods = [m for m in ALL_METHODS if m in set(s.method)]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.6), sharey=True)
     for ax, gl in zip(axes, GLARES):
-        for m in METHODS:
+        for m in methods:
             d = s[(s.glare == int(gl)) & (s.method == m)].sort_values("rate")
-            ax.plot(d.rate, 100 * d.correct_rate, "o-", color=col[m], lw=2.4 if m == "StarNet" else 1.8,
-                    label=m + (" (ours)" if m == "StarNet" else ""))
+            ax.plot(d.rate, 100 * d.correct_rate, "o-", color=col[m], lw=2.4 if m.startswith("StarNet") else 1.8,
+                    ls="--" if m.endswith("-warp") else "-",
+                    label=m + (" (ours)" if m.startswith("StarNet") else ""))
         ax.set_title("with sun glare" if gl else "no glare")
         ax.set_xlabel("tumble rate (deg/s), 0.1 s exposure")
         ax.set_xticks(RATES)
@@ -148,14 +217,14 @@ def plot(s, path):
     axes[0].legend(loc="lower left")
     n = int(s.frames.max())
     fig.suptitle(f"tetra3 solve rate vs tumble: classical centroiding vs StarNet front-end "
-                 f"({n} frames per point, 20 hot px + planet + noise)", fontsize=11)
+                 f"({n} frames per point, 20 hot px + planet + noise){note}", fontsize=11)
     fig.tight_layout()
     fig.savefig(path, dpi=140)
     plt.close(fig)
 
 
-def markdown(s, path, n, minutes):
-    lines = [f"# StarNet benchmark ({n} frames per cell, {minutes:.0f} min wall)\n",
+def markdown(s, path, n, minutes, title="StarNet benchmark"):
+    lines = [f"# {title} ({n} frames per cell, {minutes:.0f} min wall)\n",
              "correct = tetra3 returned an attitude within "
              f"{CORRECT_DEG:g} deg of truth. recall / precision: detected centroids within {MATCH_PX:g} px "
              "of a detectable star (matched-filter SNR >= 5). junk = centroids sitting on the planet or a hot pixel. "
@@ -166,7 +235,7 @@ def markdown(s, path, n, minutes):
                      "centroid err px | junk/frame | s/frame |")
         lines.append("|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|")
         d = s[s.glare == int(gl)].sort_values(["rate", "method"], key=lambda c: c.map(
-            {m: k for k, m in enumerate(METHODS)}) if c.name == "method" else c)
+            {m: k for k, m in enumerate(ALL_METHODS)}) if c.name == "method" else c)
         for _, r in d.iterrows():
             lines.append(f"| {r.rate} | {r.method} | {100 * r.correct_rate:.1f} | {100 * r.solve_rate:.1f} | "
                          f"{r.median_att_err_arcsec:.0f} | {r.recall:.2f} | {r.precision:.2f} | "
@@ -179,24 +248,29 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=200)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 4) - 1))
+    ap.add_argument("--sim-camera", action="store_true",
+                    help="film every frame through camera.fakecam (keystone, blur, vignette, JPEG) + auto-calibration")
     a = ap.parse_args()
+    sfx = "_simcam" if a.sim_camera else ""
     OUT.mkdir(exist_ok=True)
     jobs = [(r, g, i) for i in range(a.n) for g in GLARES for r in RATES]
     t0 = time.time()
     rows = []
-    with Pool(a.workers, initializer=_init) as pool:
+    with Pool(a.workers, initializer=_init, initargs=(a.sim_camera,)) as pool:
         for k, rr in enumerate(pool.imap_unordered(run_one, jobs, chunksize=2), 1):
             rows += rr
             if k % 100 == 0 or k == len(jobs):
                 print(f"{k}/{len(jobs)} frames  {(time.time() - t0) / 60:.1f} min", flush=True)
     df = pd.DataFrame(rows)
-    df.to_csv(OUT / "bench_frames.csv", index=False)
+    df.to_csv(OUT / f"bench_frames{sfx}.csv", index=False)
     s = summarise(df)
     minutes = (time.time() - t0) / 60
-    markdown(s, OUT / "benchmark.md", a.n, minutes)
-    plot(s, OUT / "solve_rate.png")
-    print((OUT / "benchmark.md").read_text())
-    print("wrote", OUT / "solve_rate.png")
+    md = OUT / f"benchmark{sfx}.md"
+    markdown(s, md, a.n, minutes,
+             title="StarNet benchmark through the fake webcam" if a.sim_camera else "StarNet benchmark")
+    plot(s, OUT / f"solve_rate{sfx}.png", "  [through fake webcam]" if a.sim_camera else "")
+    print(md.read_text())
+    print("wrote", OUT / f"solve_rate{sfx}.png")
 
 
 if __name__ == "__main__":
