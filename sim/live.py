@@ -14,10 +14,12 @@ The truth never goes on screen (the camera would see it). It is published as
 one JSON line per frame over UDP to 127.0.0.1:5005 for the dashboard, and the
 same packet to 127.0.0.1:5009 for camera.solve_live (one listener per port):
   {"frame", "t", "ra", "dec", "roll", "fov", "rate_dps", "omega", "exposure", "glare",
-   "glare_corner", "mode", "w", "h"}
+   "glare_corner", "flash", "mode", "w", "h"}
 "mode" is "sky", "calib" or "paused". ra/dec/roll are tetra3's convention, at mid-exposure.
 "omega" is the body-frame angular velocity in deg/s ([0,0,0] when paused); with
-"glare_corner" it lets solve_live --follow-sim redraw exactly this frame.
+"glare_corner" it lets solve_live --follow-sim redraw exactly this frame. "flash" is the
+flare whiteout added to every pixel (0..255): a flare blinds the sensor for
+--flash-hold + --flash-fade s before the new sky shows through.
 
 The same commands are accepted as text lines over UDP on 127.0.0.1:5006, so
 the serial bridge can drive it:  flare | rate <deg/s> | glare 0|1 | calib 0|1 | pause 0|1
@@ -49,10 +51,17 @@ class Sim:
         self.calib = False
         self.paused = False
         self.frame = 0
-        self.flare()
+        self.flash_t0 = None   # monotonic time of the last flare's whiteout
+        self.flash = 0.0       # current whiteout level added to every pixel, 0..255
+        self.flare(blind=False)
 
     # ---- commands (keyboard and UDP share these) ----
-    def flare(self):
+    def flare(self, blind=True):
+        """Jump to a new random attitude. blind: white out the sensor first (the flare saturates
+        it: full white for --flash-hold s, then fading over --flash-fade s), so the tracker visibly
+        loses lock before re-acquiring."""
+        if blind and self.a.flash_hold + self.a.flash_fade > 0:
+            self.flash_t0 = time.monotonic()
         self.att = random_attitude(self.rng)
         axis = self.rng.normal(size=3)
         self.axis = axis / np.linalg.norm(axis)
@@ -88,12 +97,27 @@ class Sim:
         if not self.paused:
             self.att = self.att * type(self.att).from_rotvec(omega * dt)
             self.att = type(self.att).from_quat(self.att.as_quat())  # renormalise
+        self.flash = self.flash_level()
         if self.calib:
             return self.calib_img
         img = self.sky.render(self.att, omega if not self.paused else None, self.a.exposure)
         if self.glare:
             self.sky.glare(img, corner=self.glare_corner)
+        if self.flash > 0:
+            img += self.flash
         return SkyRenderer.to_u8(img, self.a.noise, self.rng)
+
+    def flash_level(self):
+        if self.flash_t0 is None:
+            return 0.0
+        t = time.monotonic() - self.flash_t0
+        hold, fade = self.a.flash_hold, self.a.flash_fade
+        if t < hold:
+            return 255.0
+        if fade > 0 and t < hold + fade:
+            return 255.0 * (1 - (t - hold) / fade)
+        self.flash_t0 = None
+        return 0.0
 
     def truth(self):
         ra, dec, roll = to_radecroll(self.att)
@@ -102,6 +126,7 @@ class Sim:
                 "omega": [0.0, 0.0, 0.0] if self.paused else (self.axis * self.rate_dps).tolist(),
                 "exposure": self.a.exposure, "glare": self.glare,
                 "glare_corner": [float(v) for v in self.glare_corner],
+                "flash": round(self.flash, 1),
                 "mode": "calib" if self.calib else "paused" if self.paused else "sky",
                 "w": self.a.width, "h": self.a.height}
 
@@ -116,6 +141,8 @@ def main():
     ap.add_argument("--noise", type=float, default=0.0, help="Gaussian noise sigma (pure-sim mode only)")
     ap.add_argument("--fps", type=float, default=30.0)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--flash-hold", type=float, default=1.0, help="flare whiteout at full white, s (0 = none)")
+    ap.add_argument("--flash-fade", type=float, default=0.5, help="flare whiteout fade back to the sky, s")
     ap.add_argument("--window", action="store_true", help="windowed instead of full screen")
     ap.add_argument("--truth-port", type=int, default=5005, help="truth for the dashboard")
     ap.add_argument("--solver-truth-port", type=int, default=5009,

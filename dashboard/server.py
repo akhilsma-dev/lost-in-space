@@ -154,6 +154,8 @@ class FrameRenderer(threading.Thread):
             img = sk.render(att, omega, float(truth.get("exposure", 0.1)) if omega is not None else 0.0)
             if truth.get("glare"):
                 sk.glare(img, corner=(1.0, 1.0))
+            if truth.get("flash"):
+                img += float(truth["flash"])   # flare whiteout, as on the sim screen
             img = SkyRenderer.to_u8(img)
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 82])
         if ok:

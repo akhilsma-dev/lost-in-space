@@ -44,7 +44,8 @@ trap cleanup EXIT INT TERM
 
 # Free the ports in case an earlier run is still alive.
 # Match only "<python> -u -m <our module>" so editors / shells mentioning these names are left alone.
-pkill -f -- "python[0-9.]* -u -m (sim\.live|camera\.solve_live|dashboard|bridge\.serial_bridge)( |$)" 2>/dev/null || true
+# ("Python" is capitalised for macOS framework builds.)
+pkill -f -- "[Pp]ython[0-9.]* -u -m (sim\.live|camera\.solve_live|dashboard|bridge\.serial_bridge)( |$)" 2>/dev/null || true
 sleep 0.5
 
 SIM_ARGS=(); [[ $FULL == 0 ]] && SIM_ARGS+=(--window)

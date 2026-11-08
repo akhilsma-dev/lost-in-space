@@ -119,6 +119,8 @@ class FollowSource:
         img = self.sky.render(att, omega if np.any(omega) else None, tr.get("exposure", 0.0))
         if tr.get("glare"):
             self.sky.glare(img, corner=tuple(tr.get("glare_corner") or (1.0, 1.0)))
+        if tr.get("flash"):
+            img += float(tr["flash"])   # flare whiteout: the sensor is blinded
         return time.time(), SkyRenderer.to_u8(img), tr
 
     def close(self):
